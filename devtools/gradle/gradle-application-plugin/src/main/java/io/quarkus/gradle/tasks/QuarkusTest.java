@@ -5,6 +5,7 @@ import java.util.function.Consumer;
 import javax.inject.Inject;
 
 import org.gradle.api.artifacts.Configuration;
+import org.gradle.deployment.internal.DeploymentRegistry;
 
 import io.quarkus.deployment.dev.DevModeContext;
 import io.quarkus.deployment.dev.IsolatedTestModeMain;
@@ -13,11 +14,13 @@ import io.quarkus.gradle.extension.QuarkusPluginExtension;
 public abstract class QuarkusTest extends QuarkusDev {
 
     @Inject
-    public QuarkusTest(Configuration quarkusDevConfiguration, QuarkusPluginExtension extension) {
+    public QuarkusTest(Configuration quarkusDevConfiguration, QuarkusPluginExtension extension,
+            DeploymentRegistry deploymentRegistry) {
         super(
                 "Continuous testing mode: enables continuous testing without starting dev mode",
                 quarkusDevConfiguration,
-                extension);
+                extension,
+                deploymentRegistry);
     }
 
     protected void modifyDevModeContext(GradleDevModeLauncher.Builder builder) {

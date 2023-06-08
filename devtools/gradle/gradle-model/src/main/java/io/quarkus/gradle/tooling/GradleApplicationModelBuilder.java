@@ -235,7 +235,7 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
         // if the number of artifacts is less than the number of files then probably
         // the project includes direct file dependencies
         final Set<File> artifactFiles = resolvedArtifacts.size() < configuration.getFiles().size()
-                ? new HashSet<>(resolvedArtifacts.size())
+                ? new HashSet<>(resolvedArtifacts.size() * 4 / 3)
                 : null;
 
         configuration.getFirstLevelModuleDependencies()

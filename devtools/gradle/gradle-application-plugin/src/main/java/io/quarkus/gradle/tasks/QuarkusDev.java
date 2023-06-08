@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
@@ -24,6 +25,7 @@ import java.util.Set;
 import javax.inject.Inject;
 
 import org.apache.tools.ant.types.Commandline;
+import org.gradle.BuildResult;
 import org.gradle.api.Action;
 import org.gradle.api.GradleException;
 import org.gradle.api.Project;
@@ -32,7 +34,6 @@ import org.gradle.api.artifacts.Dependency;
 import org.gradle.api.artifacts.ModuleVersionIdentifier;
 import org.gradle.api.artifacts.ResolvedArtifact;
 import org.gradle.api.file.FileCollection;
-import org.gradle.api.file.FileSystemLocation;
 import org.gradle.api.model.ObjectFactory;
 import org.gradle.api.plugins.JavaPlugin;
 import org.gradle.api.plugins.JavaPluginExtension;
@@ -44,18 +45,20 @@ import org.gradle.api.tasks.CompileClasspath;
 import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.InputFiles;
 import org.gradle.api.tasks.Internal;
-import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.PathSensitive;
 import org.gradle.api.tasks.PathSensitivity;
 import org.gradle.api.tasks.SourceSet;
-import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.options.Option;
+import org.gradle.deployment.internal.DeploymentRegistry;
 import org.gradle.jvm.toolchain.JavaLauncher;
 import org.gradle.jvm.toolchain.JavaToolchainService;
 import org.gradle.jvm.toolchain.JavaToolchainSpec;
 import org.gradle.util.GradleVersion;
+import org.gradle.work.FileChange;
+import org.gradle.work.Incremental;
+import org.gradle.work.InputChanges;
 
 import io.quarkus.analytics.AnalyticsService;
 import io.quarkus.analytics.config.FileLocationsImpl;
@@ -71,9 +74,12 @@ import io.quarkus.deployment.dev.DevModeContext;
 import io.quarkus.deployment.dev.DevModeMain;
 import io.quarkus.deployment.dev.QuarkusDevModeLauncher;
 import io.quarkus.gradle.dependency.ApplicationDeploymentClasspathBuilder;
+import io.quarkus.gradle.dependency.GradleProjectSourceSets;
 import io.quarkus.gradle.dsl.CompilerOption;
 import io.quarkus.gradle.dsl.CompilerOptions;
 import io.quarkus.gradle.extension.QuarkusPluginExtension;
+import io.quarkus.gradle.tasks.devmode.ContinuousDeploymentHandle;
+import io.quarkus.gradle.tasks.devmode.DevProjectState;
 import io.quarkus.gradle.tooling.ToolingUtils;
 import io.quarkus.maven.dependency.ArtifactKey;
 import io.quarkus.maven.dependency.ResolvedDependency;
@@ -85,7 +91,6 @@ public abstract class QuarkusDev extends QuarkusTask {
     public static final String IO_QUARKUS_DEVMODE_ARGS = "io.quarkus.devmode-args";
 
     private final Configuration quarkusDevConfiguration;
-    private final SourceSet mainSourceSet;
 
     private final CompilerOptions compilerOptions = new CompilerOptions();
 
@@ -103,25 +108,34 @@ public abstract class QuarkusDev extends QuarkusTask {
 
     private final Set<File> filesIncludedInClasspath = new HashSet<>();
 
+    private final DeploymentRegistry deploymentRegistry;
+
     @SuppressWarnings("unused")
     @Inject
-    public QuarkusDev(Configuration quarkusDevConfiguration, QuarkusPluginExtension extension) {
-        this("Development mode: enables hot deployment with background compilation", quarkusDevConfiguration, extension);
+    public QuarkusDev(Configuration quarkusDevConfiguration, QuarkusPluginExtension extension,
+            DeploymentRegistry deploymentRegistry) {
+        this("Development mode: enables hot deployment with background compilation", quarkusDevConfiguration, extension,
+                deploymentRegistry);
     }
 
     public QuarkusDev(
             String name,
             Configuration quarkusDevConfiguration,
-            @SuppressWarnings("unused") QuarkusPluginExtension extension) {
+            @SuppressWarnings("unused") QuarkusPluginExtension extension,
+            DeploymentRegistry deploymentRegistry) {
         super(name);
         this.quarkusDevConfiguration = quarkusDevConfiguration;
-        mainSourceSet = getProject().getExtensions().getByType(SourceSetContainer.class)
-                .getByName(SourceSet.MAIN_SOURCE_SET_NAME);
 
         final ObjectFactory objectFactory = getProject().getObjects();
 
         workingDirectory = objectFactory.property(File.class);
-        workingDirectory.convention(getProject().provider(() -> QuarkusPluginExtension.getLastFile(getCompilationOutput())));
+        workingDirectory.convention(getProject().provider(() -> {
+            File workDir = new File(buildDir, "quarkus-dev-work");
+            if (!workDir.isDirectory() && !workDir.mkdirs()) {
+                throw new GradleException("Failed to create directory " + workDir);
+            }
+            return workDir;
+        }));
 
         environmentVariables = objectFactory.mapProperty(String.class, String.class);
 
@@ -137,6 +151,11 @@ public abstract class QuarkusDev extends QuarkusTask {
         openJavaLang = objectFactory.property(Boolean.class);
         openJavaLang.convention(false);
         modules = objectFactory.listProperty(String.class);
+
+        getOutputs().upToDateWhen(task -> deploymentRegistry != null
+                && deploymentRegistry.get(task.getPath(), ContinuousDeploymentHandle.class) != null);
+
+        this.deploymentRegistry = deploymentRegistry;
     }
 
     /**
@@ -145,35 +164,13 @@ public abstract class QuarkusDev extends QuarkusTask {
      */
     @SuppressWarnings("unused")
     @CompileClasspath
+    @Incremental
     public Configuration getQuarkusDevConfiguration() {
         return this.quarkusDevConfiguration;
     }
 
     /**
-     * The JVM sources (Java, Kotlin, ..) for the project
-     */
-    @Optional
-    @InputFiles
-    @PathSensitive(PathSensitivity.RELATIVE)
-    public FileCollection getSources() {
-        return mainSourceSet.getAllJava().getSourceDirectories();
-    }
-
-    /**
-     * The JVM classes directory (compilation output)
-     */
-    @Optional
-    @InputFiles
-    @PathSensitive(PathSensitivity.RELATIVE)
-    public FileCollection getCompilationOutput() {
-        return mainSourceSet.getOutput().getClassesDirs();
-    }
-
-    /**
      * The directory to be used as the working dir for the dev process.
-     *
-     * Defaults to the main source set's classes directory. If there are
-     * multiple, one is picked at random (see {@link QuarkusPluginExtension#getLastFile}).
      */
     @Input
     public Property<File> getWorkingDirectory() {
@@ -311,85 +308,215 @@ public abstract class QuarkusDev extends QuarkusTask {
     }
 
     @TaskAction
-    public void startDev() {
-        if (!sourcesExist()) {
-            throw new GradleException("The `src/main/java` directory is required, please create it.");
-        }
+    public void startDev(InputChanges changes) throws InterruptedException {
+        String devModeArgsOutput = System.getProperty(IO_QUARKUS_DEVMODE_ARGS);
 
-        if (!classesExist()) {
-            throw new GradleException("The project has no output yet, " +
-                    "this should not happen as build should have been executed first. " +
-                    "Does the project have any source files?");
+        if (devModeArgsOutput != null) {
+            // just dump the command line to the file specified via IO_QUARKUS_DEVMODE_ARGS
+            dumpDevModeArgs();
+        } else if (deploymentRegistry == null) {
+            // no continuous build
+            plainStart();
+        } else {
+            continuousDev(changes);
         }
-        AnalyticsService analyticsService = new AnalyticsService(FileLocationsImpl.INSTANCE,
-                new GradleMessageWriter(getLogger()));
-        analyticsService.buildAnalyticsUserInput((String prompt) -> {
-            System.out.print(prompt);
-            try (Scanner scanner = new Scanner(new FilterInputStream(System.in) {
-                @Override
-                public void close() throws IOException {
-                    //don't close System.in!
-                }
-            })) {
-                return scanner.nextLine();
-            } catch (Exception e) {
-                getLogger().warn("Failed to collect user input for analytics", e);
-                return "";
+    }
+
+    @InputFiles
+    @PathSensitive(PathSensitivity.ABSOLUTE)
+    @Incremental
+    public FileCollection getWatch() {
+        System.err.println();
+        System.err.println("getWatch --> " + (inputFileCollection != null));
+        System.err.println();
+
+        if (inputFileCollection == null) {
+            List<Object> watchList = new ArrayList<>();
+
+            Project project = getProject();
+
+            watchList.add(project.getBuildFile());
+
+            for (SourceSet sourceSet : allSourceSets().getAllSourceSets()) {
+                getLogger().lifecycle("Watching source set {} of project {} for {}", sourceSet.getName(), project.getPath(),
+                        getName());
+
+                watchList.add(sourceSet.getAllJava().getSourceDirectories());
+                watchList.add(sourceSet.getResources().getSourceDirectories());
+                watchList.add(sourceSet.getOutput().getClassesDirs());
+                watchList.add(sourceSet.getOutput().getResourcesDir());
+                watchList.add(sourceSet.getCompileClasspath());
+                watchList.add(sourceSet.getRuntimeClasspath());
+                watchList.add(sourceSet.getAnnotationProcessorPath());
             }
+
+            ApplicationDeploymentClasspathBuilder cpBuilder = new ApplicationDeploymentClasspathBuilder(project,
+                    LaunchMode.DEVELOPMENT);
+            watchList.add(cpBuilder.getRuntimeConfiguration());
+            watchList.add(cpBuilder.getPlatformConfiguration());
+            watchList.add(cpBuilder.getDeploymentConfiguration());
+
+            this.inputFileCollection = project.files(watchList);
+        }
+        return inputFileCollection;
+    }
+
+    private boolean continuousDev(InputChanges changes) throws InterruptedException {
+        ContinuousDeploymentHandle handle = findDeployment();
+
+        if (handle == null) {
+            continuousDevInitial();
+            return true;
+        } else {
+            continuousDevIncremental(changes, handle);
+            return false;
+        }
+    }
+
+    private void continuousDevIncremental(InputChanges changes, ContinuousDeploymentHandle handle) throws InterruptedException {
+        List<FileChange> watchChanges = new ArrayList<>();
+        List<Path> changedPaths = new ArrayList<>();
+        changes.getFileChanges(getWatch()).forEach(change -> {
+            watchChanges.add(change);
+            System.err.println("  CHANGE: " + change);
+            changedPaths.add(change.getFile().toPath().toAbsolutePath());
         });
 
-        try {
-            QuarkusDevModeLauncher runner = newLauncher(analyticsService);
-            String outputFile = System.getProperty(IO_QUARKUS_DEVMODE_ARGS);
-            if (outputFile == null) {
-                getProject().exec(action -> {
-                    action.commandLine(runner.args()).workingDir(getWorkingDirectory().get());
-                    action.environment(getEnvVars());
-                    action.setStandardInput(System.in)
-                            .setErrorOutput(System.out)
-                            .setStandardOutput(System.out);
-                });
-            } else {
-                try (BufferedWriter is = Files.newBufferedWriter(Paths.get(outputFile))) {
-                    for (String i : runner.args()) {
-                        is.write(i);
-                        is.newLine();
+        // TODO Collect changed main source files
+        // TODO Collect changed test source files per test-suite
+        // TODO Collect changed main runtime dependencies
+        // TODO Collect changed test runtime dependencies per test-suite
+
+        // TODO detect since class file changes (partial reload)
+        // TODO detect test runtime classpath changes (test reload)
+        // TODO detect runtime classpath changes (full reload)
+
+        boolean incremental = changes.isIncremental();
+        boolean testOnlyChange;
+        if (incremental) {
+            Path emptyPath = Path.of("");
+            System.err.println("INCREMENTAL");
+            testOnlyChange = true;
+            SourceSet mainSourceSet = allSourceSets().getMainSourceSet();
+
+            for (File f : mainSourceSet.getCompileClasspath().getFiles()) {
+                Path fAbs = f.toPath().toAbsolutePath();
+                for (Path file : changedPaths) {
+                    if (file.startsWith(fAbs)) {
+                        Path relative = fAbs.relativize(file);
+                        if (!emptyPath.equals(relative)) {
+                            System.err.println("  --> IN MAIN COMPILE CLASSPATH - " + relative + " in " + fAbs);
+                        } else {
+                            System.err.println("  --> IN MAIN COMPILE CLASSPATH - ELEMENT " + fAbs);
+                        }
+                        testOnlyChange = false;
                     }
                 }
             }
-
-        } catch (Exception e) {
-            throw new GradleException("Failed to run", e);
-        } finally {
-            analyticsService.close();
-        }
-    }
-
-    private boolean sourcesExist() {
-        final Set<FileSystemLocation> srcDirLocations = mainSourceSet.getAllJava().getSourceDirectories().getElements().get();
-        for (FileSystemLocation srcDirLocation : srcDirLocations) {
-            final File srcDir = srcDirLocation.getAsFile();
-            if (srcDir.exists() && srcDir.isDirectory()) {
-                final File[] files = srcDir.listFiles();
-                if (files != null && files.length > 0) {
-                    return true;
+            for (File f : mainSourceSet.getRuntimeClasspath().getFiles()) {
+                Path fAbs = f.toPath().toAbsolutePath();
+                for (Path file : changedPaths) {
+                    if (file.startsWith(fAbs)) {
+                        Path relative = fAbs.relativize(file);
+                        if (!emptyPath.equals(relative)) {
+                            System.err.println("  --> IN MAIN RUNTIME CLASSPATH - " + relative + " in " + fAbs);
+                        } else {
+                            System.err.println("  --> IN MAIN RUNTIME CLASSPATH - ELEMENT " + fAbs);
+                        }
+                        testOnlyChange = false;
+                    }
                 }
             }
+        } else {
+            // Gradle triggered a full (re)build - need to re-start Quarkus, because we do not know what changed.
+            // TODO trigger Quarkus re-start
+            testOnlyChange = false;
         }
-        return false;
+
+        getProject().getGradle().buildFinished(buildResultAction());
+
+        // TODO
+        boolean needRestart = false;
+
+        System.err.println("TRIGGER RELOAD / test-only? " + testOnlyChange);
+
+        handle.reload(watchChanges);
     }
 
-    private boolean classesExist() {
-        for (FileSystemLocation location : getCompilationOutput().getElements().get()) {
-            final File locationAsFile = location.getAsFile();
-            if (locationAsFile.isDirectory()) {
-                return true;
+    private void continuousDevInitial() {
+        QuarkusDevModeLauncher runner;
+        try {
+            runner = newLauncher();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        DevProjectState devProjectState = new DevProjectState(this, runner);
+        registerDeployment(devProjectState);
+
+        getProject().getGradle().buildFinished(buildResultAction());
+    }
+
+    private ContinuousDeploymentHandle findDeployment() {
+        String deploymentId = getPath();
+        return deploymentRegistry.get(deploymentId, ContinuousDeploymentHandle.class);
+    }
+
+    private ContinuousDeploymentHandle registerDeployment(DevProjectState devProjectState) {
+        String deploymentId = getPath();
+        return deploymentRegistry.start(
+                deploymentId, DeploymentRegistry.ChangeBehavior.NONE, ContinuousDeploymentHandle.class,
+                devProjectState);
+    }
+
+    private Action<? super BuildResult> buildResultAction() {
+        return buildResult -> {
+            if (buildResult.getFailure() != null) {
+                getLogger().error("Quarkus continuous build of {} failed: {}", getProject().getPath(),
+                        buildResult.getFailure().toString());
+            } else {
+                getLogger().lifecycle("Quarkus continuous build of {} finished successfully.", getProject().getPath());
             }
-        }
-        return false;
+        };
     }
 
-    private QuarkusDevModeLauncher newLauncher(final AnalyticsService analyticsService) throws Exception {
+    private void plainStart() {
+        try {
+            QuarkusDevModeLauncher runner = newLauncher();
+            getProject().exec(action -> {
+                action.commandLine(runner.args()).workingDir(getWorkingDirectory().get());
+                action.environment(getEnvVars());
+                action.setStandardInput(System.in)
+                        .setErrorOutput(System.out)
+                        .setStandardOutput(System.out);
+            });
+        } catch (Exception e) {
+            throw new GradleException("Failed to run", e);
+        }
+    }
+
+    private void dumpDevModeArgs() {
+        String outputFile = System.getProperty(IO_QUARKUS_DEVMODE_ARGS);
+        try {
+            QuarkusDevModeLauncher runner = newLauncher();
+            Path file = Paths.get(outputFile);
+            Path parent = file.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            try (BufferedWriter is = Files.newBufferedWriter(file)) {
+                for (String i : runner.args()) {
+                    is.write(i);
+                    is.newLine();
+                }
+            }
+            getLogger().lifecycle("Quarkus dev mode args dumped to {}", file);
+        } catch (Exception e) {
+            throw new GradleException("Failed to write Quarkus dev mode args to " + outputFile, e);
+        }
+    }
+
+    private QuarkusDevModeLauncher newLauncher() throws Exception {
         final Project project = getProject();
         final JavaPluginExtension javaPluginExtension = project.getExtensions().getByType(JavaPluginExtension.class);
 
@@ -445,12 +572,7 @@ public abstract class QuarkusDev extends QuarkusTask {
         builder.sourceEncoding(getSourceEncoding());
 
         final ApplicationModel appModel = extension().getApplicationModel(LaunchMode.DEVELOPMENT);
-
-        analyticsService.sendAnalytics(
-                DEV_MODE,
-                appModel,
-                Map.of(GRADLE_VERSION, getProject().getGradle().getGradleVersion()),
-                getProject().getBuildDir().getAbsoluteFile());
+        sendDevAnalytics(appModel);
 
         final Set<ArtifactKey> projectDependencies = new HashSet<>();
         for (ResolvedDependency localDep : DependenciesFilter.getReloadableModules(appModel)) {
@@ -518,6 +640,32 @@ public abstract class QuarkusDev extends QuarkusTask {
         }
 
         return builder.build();
+    }
+
+    private void sendDevAnalytics(ApplicationModel appModel) {
+        try (AnalyticsService analyticsService = new AnalyticsService(FileLocationsImpl.INSTANCE,
+                new GradleMessageWriter(getLogger()))) {
+            analyticsService.buildAnalyticsUserInput((String prompt) -> {
+                System.out.print(prompt);
+                try (Scanner scanner = new Scanner(new FilterInputStream(System.in) {
+                    @Override
+                    public void close() throws IOException {
+                        //don't close System.in!
+                    }
+                })) {
+                    return scanner.nextLine();
+                } catch (Exception e) {
+                    getLogger().warn("Failed to collect user input for analytics", e);
+                    return "";
+                }
+            });
+
+            analyticsService.sendAnalytics(
+                    DEV_MODE,
+                    appModel,
+                    Map.of(GRADLE_VERSION, getProject().getGradle().getGradleVersion()),
+                    getProject().getBuildDir().getAbsoluteFile());
+        }
     }
 
     protected void modifyDevModeContext(GradleDevModeLauncher.Builder builder) {
@@ -730,4 +878,14 @@ public abstract class QuarkusDev extends QuarkusTask {
     public void shouldPropagateJavaCompilerArgs(boolean shouldPropagateJavaCompilerArgs) {
         this.shouldPropagateJavaCompilerArgs.set(shouldPropagateJavaCompilerArgs);
     }
+
+    private GradleProjectSourceSets allSourceSets() {
+        if (this.projectSourceSets == null) {
+            this.projectSourceSets = new GradleProjectSourceSets(getProject());
+        }
+        return projectSourceSets;
+    }
+
+    private GradleProjectSourceSets projectSourceSets;
+    private FileCollection inputFileCollection;
 }

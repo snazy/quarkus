@@ -13,7 +13,8 @@ public abstract class QuarkusRemoteDev extends QuarkusDev {
         super(
                 "Remote development mode: enables hot deployment on remote JVM with background compilation",
                 quarkusDevConfiguration,
-                extension);
+                extension,
+                null);
     }
 
     protected void modifyDevModeContext(GradleDevModeLauncher.Builder builder) {
