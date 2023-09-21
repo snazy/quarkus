@@ -170,8 +170,8 @@ public class ConditionalDependenciesEnabler {
 
     private Configuration createConditionalDependenciesConfiguration(Project project, Dependency conditionalDep) {
         Configuration conditionalDepConfiguration = project.getConfigurations()
-                .detachedConfiguration()
-                .extendsFrom(enforcedPlatforms);
+                .detachedConfiguration();
+//                .extendsFrom(enforcedPlatforms);
         conditionalDepConfiguration.getDependencies().add(conditionalDep);
         return conditionalDepConfiguration;
     }

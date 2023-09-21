@@ -67,49 +67,49 @@ public class ApplicationDeploymentClasspathBuilder {
 
         // Custom configuration for dev mode
         configContainer.register(ToolingUtils.DEV_MODE_CONFIGURATION_NAME, config -> {
-            config.extendsFrom(configContainer.getByName(JavaPlugin.IMPLEMENTATION_CONFIGURATION_NAME));
+//            config.extendsFrom(configContainer.getByName(JavaPlugin.IMPLEMENTATION_CONFIGURATION_NAME));
             config.setCanBeConsumed(false);
         });
 
         // Base runtime configurations for every launch mode
         configContainer
                 .register(ApplicationDeploymentClasspathBuilder.getBaseRuntimeConfigName(LaunchMode.TEST), config -> {
-                    config.extendsFrom(configContainer.getByName(JavaPlugin.TEST_RUNTIME_CLASSPATH_CONFIGURATION_NAME));
+//                    config.extendsFrom(configContainer.getByName(JavaPlugin.TEST_RUNTIME_CLASSPATH_CONFIGURATION_NAME));
                     config.setCanBeConsumed(false);
                 });
 
         configContainer
                 .register(ApplicationDeploymentClasspathBuilder.getBaseRuntimeConfigName(LaunchMode.NORMAL), config -> {
-                    config.extendsFrom(configContainer.getByName(JavaPlugin.RUNTIME_CLASSPATH_CONFIGURATION_NAME));
+//                    config.extendsFrom(configContainer.getByName(JavaPlugin.RUNTIME_CLASSPATH_CONFIGURATION_NAME));
                     config.setCanBeConsumed(false);
                 });
 
         configContainer
                 .register(ApplicationDeploymentClasspathBuilder.getBaseRuntimeConfigName(LaunchMode.DEVELOPMENT), config -> {
-                    config.extendsFrom(
-                            configContainer.getByName(ToolingUtils.DEV_MODE_CONFIGURATION_NAME),
-                            configContainer.getByName(JavaPlugin.COMPILE_CLASSPATH_CONFIGURATION_NAME),
-                            configContainer.getByName(JavaPlugin.RUNTIME_CLASSPATH_CONFIGURATION_NAME));
+//                    config.extendsFrom(
+//                            configContainer.getByName(ToolingUtils.DEV_MODE_CONFIGURATION_NAME),
+//                            configContainer.getByName(JavaPlugin.COMPILE_CLASSPATH_CONFIGURATION_NAME),
+//                            configContainer.getByName(JavaPlugin.RUNTIME_CLASSPATH_CONFIGURATION_NAME));
                     config.setCanBeConsumed(false);
                 });
 
         // enable the Panache annotation processor on the classpath, if it's found among the dependencies
-        configContainer.named(JavaPlugin.ANNOTATION_PROCESSOR_CONFIGURATION_NAME, config -> {
-            config.withDependencies(annotationProcessors -> {
-                Set<ResolvedArtifact> compileClasspathArtifacts = DependencyUtils
-                        .duplicateConfiguration(project, configContainer
-                                .getByName(JavaPlugin.COMPILE_CLASSPATH_CONFIGURATION_NAME))
-                        .getResolvedConfiguration()
-                        .getResolvedArtifacts();
-                for (ResolvedArtifact artifact : compileClasspathArtifacts) {
-                    if ("quarkus-panache-common".equals(artifact.getName())
-                            && "io.quarkus".equals(artifact.getModuleVersion().getId().getGroup())) {
-                        project.getDependencies().add(JavaPlugin.ANNOTATION_PROCESSOR_CONFIGURATION_NAME,
-                                "io.quarkus:quarkus-panache-common:" + artifact.getModuleVersion().getId().getVersion());
-                    }
-                }
-            });
-        });
+//        configContainer.named(JavaPlugin.ANNOTATION_PROCESSOR_CONFIGURATION_NAME, config -> {
+//            config.withDependencies(annotationProcessors -> {
+//                Set<ResolvedArtifact> compileClasspathArtifacts = DependencyUtils
+//                        .duplicateConfiguration(project, configContainer
+//                                .getByName(JavaPlugin.COMPILE_CLASSPATH_CONFIGURATION_NAME))
+//                        .getResolvedConfiguration()
+//                        .getResolvedArtifacts();
+//                for (ResolvedArtifact artifact : compileClasspathArtifacts) {
+//                    if ("quarkus-panache-common".equals(artifact.getName())
+//                            && "io.quarkus".equals(artifact.getModuleVersion().getId().getGroup())) {
+//                        project.getDependencies().add(JavaPlugin.ANNOTATION_PROCESSOR_CONFIGURATION_NAME,
+//                                "io.quarkus:quarkus-panache-common:" + artifact.getModuleVersion().getId().getVersion());
+//                    }
+//                }
+//            });
+//        });
     }
 
     private final Project project;
@@ -137,9 +137,9 @@ public class ApplicationDeploymentClasspathBuilder {
         this.deploymentConfigurationName = ToolingUtils.toDeploymentConfigurationName(this.runtimeConfigurationName);
         this.platformImportName = project.getPath() + ":" + this.platformConfigurationName;
 
-        setUpPlatformConfiguration();
-        setUpRuntimeConfiguration();
-        setUpDeploymentConfiguration();
+//        setUpPlatformConfiguration();
+//        setUpRuntimeConfiguration();
+//        setUpDeploymentConfiguration();
     }
 
     private void setUpPlatformConfiguration() {
@@ -200,9 +200,9 @@ public class ApplicationDeploymentClasspathBuilder {
         if (!project.getConfigurations().getNames().contains(this.runtimeConfigurationName)) {
             project.getConfigurations().register(this.runtimeConfigurationName, configuration -> {
                 configuration.setCanBeConsumed(false);
-                configuration.extendsFrom(
-                        project.getConfigurations()
-                                .getByName(ApplicationDeploymentClasspathBuilder.getBaseRuntimeConfigName(mode)));
+//                configuration.extendsFrom(
+//                        project.getConfigurations()
+//                                .getByName(ApplicationDeploymentClasspathBuilder.getBaseRuntimeConfigName(mode)));
             });
         }
     }
@@ -212,7 +212,7 @@ public class ApplicationDeploymentClasspathBuilder {
             project.getConfigurations().register(this.deploymentConfigurationName, configuration -> {
                 configuration.setCanBeConsumed(false);
                 Configuration enforcedPlatforms = this.getPlatformConfiguration();
-                configuration.extendsFrom(enforcedPlatforms);
+//                configuration.extendsFrom(enforcedPlatforms);
                 ListProperty<Dependency> dependencyListProperty = project.getObjects().listProperty(Dependency.class);
                 configuration.getDependencies().addAllLater(dependencyListProperty.value(project.provider(() -> {
                     ConditionalDependenciesEnabler cdEnabler = new ConditionalDependenciesEnabler(project, mode,
@@ -266,7 +266,7 @@ public class ApplicationDeploymentClasspathBuilder {
      * Forces deployment configuration to resolve to discover conditional dependencies.
      */
     public Configuration getRuntimeConfiguration() {
-        this.getDeploymentConfiguration().resolve();
+//        this.getDeploymentConfiguration().resolve();
         return project.getConfigurations().getByName(this.runtimeConfigurationName);
     }
 
