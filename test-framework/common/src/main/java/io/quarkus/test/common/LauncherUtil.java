@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,7 @@ import org.eclipse.microprofile.config.Config;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.configuration.ConfigUtils;
 import io.quarkus.runtime.configuration.QuarkusConfigFactory;
+import io.quarkus.test.common.ListeningAddresses.ListeningAddress;
 import io.quarkus.test.common.http.TestHTTPResourceManager;
 import io.quarkus.utilities.OS;
 import io.smallrye.config.SmallRyeConfig;
@@ -83,17 +85,17 @@ public final class LauncherUtil {
      * listening on.
      * If the wait time is exceeded an {@code IllegalStateException} is thrown.
      */
-    static ListeningAddress waitForCapturedListeningData(Process quarkusProcess, Path logFile, long waitTimeSeconds) {
+    static ListeningAddresses waitForCapturedListeningData(Process quarkusProcess, Path logFile, long waitTimeSeconds) {
         ensureProcessIsAlive(quarkusProcess);
 
         CountDownLatch signal = new CountDownLatch(1);
-        AtomicReference<ListeningAddress> resultReference = new AtomicReference<>();
+        AtomicReference<ListeningAddresses> resultReference = new AtomicReference<>();
         CaptureListeningDataReader captureListeningDataReader = new CaptureListeningDataReader(logFile,
                 Duration.ofSeconds(waitTimeSeconds), signal, resultReference);
         new Thread(captureListeningDataReader, "capture-listening-data").start();
         try {
             signal.await(waitTimeSeconds + 2, TimeUnit.SECONDS); // wait enough for the signal to be given by the capturing thread
-            ListeningAddress result = resultReference.get();
+            ListeningAddresses result = resultReference.get();
             if (result != null) {
                 return result;
             }
@@ -226,16 +228,23 @@ public final class LauncherUtil {
 
     /**
      * Updates the configuration necessary to make all test systems knowledgeable about the port on which the launched
-     * process is listening
+     * process is listening for HTTP(S) for both the application and management listeners.
      */
-    static void updateConfigForPort(Integer effectivePort) {
-        if (effectivePort != null) {
-            System.setProperty("quarkus.http.port", effectivePort.toString()); //set the port as a system property in order to have it applied to Config
-            System.setProperty("quarkus.http.test-port", effectivePort.toString()); // needed for RestAssuredManager
+    static ListeningAddress updateConfigForPort(ListeningAddresses result) {
+        ListeningAddress http = result.getService("http");
+        ListeningAddress management = result.getService("management");
+        if (http != null) {
+            System.setProperty("quarkus.http.port", Integer.toString(http.getPort())); //set the port as a system property in order to have it applied to Config
+            System.setProperty("quarkus.http.test-port", Integer.toString(http.getPort())); // needed for RestAssuredManager
+            if (management != null) {
+                System.setProperty("quarkus.management.port", Integer.toString(management.getPort())); //set the port as a system property in order to have it applied to Config
+                System.setProperty("quarkus.management.test-port", Integer.toString(management.getPort())); // needed for RestAssuredManager
+            }
             installAndGetSomeConfig(); // reinitialize the configuration to make sure the actual port is used
             System.clearProperty("test.url"); // make sure the old value does not interfere with setting the new one
             System.setProperty("test.url", TestHTTPResourceManager.getUri());
         }
+        return http;
     }
 
     /**
@@ -247,12 +256,13 @@ public final class LauncherUtil {
         private final Path processOutput;
         private final Duration waitTime;
         private final CountDownLatch signal;
-        private final AtomicReference<ListeningAddress> resultReference;
-        private final Pattern listeningRegex = Pattern.compile("Listening on:\\s+(https?)://[^:]*:(\\d+)");
+        private final AtomicReference<ListeningAddresses> resultReference;
+        private final Pattern listeningRegex = Pattern.compile(
+                "Listening on:\\s+(https?)://[^:]*:(\\d+)([.] Management interface listening on (https?)://[^:]*:(\\d+)[.])?");
         private final Pattern startedRegex = Pattern.compile(".*Quarkus .* started in \\d+.*s.*");
 
         public CaptureListeningDataReader(Path processOutput, Duration waitTime, CountDownLatch signal,
-                AtomicReference<ListeningAddress> resultReference) {
+                AtomicReference<ListeningAddresses> resultReference) {
             this.processOutput = processOutput;
             this.waitTime = waitTime;
             this.signal = signal;
@@ -284,7 +294,19 @@ public final class LauncherUtil {
 
                         Matcher regexMatcher = listeningRegex.matcher(line);
                         if (regexMatcher.find()) {
-                            dataDetermined(regexMatcher.group(1), Integer.valueOf(regexMatcher.group(2)));
+                            Map<String, ListeningAddress> services = new HashMap<>();
+                            String httpProtocol = regexMatcher.group(1);
+                            String httpPort = regexMatcher.group(2);
+                            services.put("http", new ListeningAddress(Integer.parseInt(httpPort), httpProtocol));
+                            String managementProtocol = regexMatcher.group(3);
+                            String managementPort = regexMatcher.group(4);
+                            if (managementPort != null) {
+                                int mgmtPort = Integer.parseInt(managementPort);
+                                if (mgmtPort > 0) {
+                                    services.put("management", new ListeningAddress(mgmtPort, managementProtocol));
+                                }
+                            }
+                            dataDetermined(services);
                             return;
                         } else {
                             if (line.contains("Failed to start application (with profile")) {
@@ -300,7 +322,7 @@ public final class LauncherUtil {
                         // or waiting the next check interval will exceed the bailout time, it's time to finish waiting:
                         if (now + LOG_CHECK_INTERVAL > bailoutTime || now - 2 * LOG_CHECK_INTERVAL > timeStarted) {
                             if (started) {
-                                dataDetermined(null, null); // no http, all is null
+                                dataDetermined(Collections.emptyMap()); // no http, all is null
                             } else {
                                 unableToDetermineData("Waited " + waitTime.getSeconds() + " seconds for " + processOutput
                                         + " to contain info about the listening port and protocol but no such info was found. "
@@ -342,8 +364,8 @@ public final class LauncherUtil {
             return false;
         }
 
-        private void dataDetermined(String protocolValue, Integer portValue) {
-            this.resultReference.set(new ListeningAddress(portValue, protocolValue));
+        private void dataDetermined(Map<String, ListeningAddress> services) {
+            this.resultReference.set(new ListeningAddresses(services));
             signal.countDown();
         }
 

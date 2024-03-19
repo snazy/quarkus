@@ -176,9 +176,9 @@ public class DefaultDockerContainerLauncher implements DockerContainerArtifactLa
                     waitTimeSeconds, logFile);
             isSsl = result.isSsl();
         } else {
-            final ListeningAddress result = waitForCapturedListeningData(containerProcess, logFile, waitTimeSeconds);
-            updateConfigForPort(result.getPort());
-            isSsl = result.isSsl();
+            ListeningAddresses result = waitForCapturedListeningData(containerProcess, logFile, waitTimeSeconds);
+            ListeningAddresses.ListeningAddress http = updateConfigForPort(result);
+            isSsl = http != null && http.isSsl();
         }
     }
 

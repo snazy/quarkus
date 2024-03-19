@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
+import io.quarkus.test.common.ListeningAddresses.ListeningAddress;
 import io.quarkus.test.common.http.TestHTTPResourceManager;
 
 public class DefaultJarLauncher implements JarArtifactLauncher {
@@ -69,9 +70,9 @@ public class DefaultJarLauncher implements JarArtifactLauncher {
                     waitTimeSeconds, logFile);
             isSsl = result.isSsl();
         } else {
-            ListeningAddress result = waitForCapturedListeningData(quarkusProcess, logFile, waitTimeSeconds);
-            updateConfigForPort(result.getPort());
-            isSsl = result.isSsl();
+            ListeningAddresses result = waitForCapturedListeningData(quarkusProcess, logFile, waitTimeSeconds);
+            ListeningAddress http = updateConfigForPort(result);
+            isSsl = http != null && http.isSsl();
         }
     }
 

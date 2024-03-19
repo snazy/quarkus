@@ -107,9 +107,9 @@ public class DefaultNativeImageLauncher implements NativeImageLauncher {
                     waitTimeSeconds, logFile);
             isSsl = result.isSsl();
         } else {
-            ListeningAddress result = waitForCapturedListeningData(quarkusProcess, logFile, waitTimeSeconds);
-            updateConfigForPort(result.getPort());
-            isSsl = result.isSsl();
+            ListeningAddresses result = waitForCapturedListeningData(quarkusProcess, logFile, waitTimeSeconds);
+            ListeningAddresses.ListeningAddress http = updateConfigForPort(result);
+            isSsl = http != null && http.isSsl();
         }
     }
 
