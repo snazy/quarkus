@@ -30,6 +30,6 @@ public abstract class ImageBuild extends ImageTask {
         String inputString = new String(Files.readAllBytes(imageBuilder.toPath()));
         forcedProperties.put(QUARKUS_CONTAINER_IMAGE_BUILD, "true");
         forcedProperties.put(QUARKUS_CONTAINER_IMAGE_BUILDER, inputString);
-        getAdditionalForcedProperties().get().getProperties().putAll(forcedProperties);
+        getAdditionalForcedProperties().get().putAll(forcedProperties);
     }
 }

@@ -1,50 +1,29 @@
 package io.quarkus.gradle.tasks;
 
-import static io.quarkus.gradle.tooling.GradleApplicationModelBuilder.clearFlag;
-import static io.quarkus.gradle.tooling.GradleApplicationModelBuilder.isFlagOn;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.addFileDependencies;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.clearFlag;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.collectDestinationDirs;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.isFlagOn;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.processQuarkusDependency;
 import static io.quarkus.gradle.tooling.dependency.DependencyUtils.getKey;
-import static java.util.stream.Collectors.toList;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.Serializable;
-import java.io.UncheckedIOException;
-import java.nio.file.FileSystem;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Collection;
-import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.Set;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import javax.inject.Inject;
-
-import org.gradle.api.DefaultTask;
-import org.gradle.api.artifacts.ArtifactCollection;
-import org.gradle.api.artifacts.Configuration;
 import org.gradle.api.artifacts.ModuleVersionIdentifier;
-import org.gradle.api.artifacts.ResolvableDependencies;
-import org.gradle.api.artifacts.component.ComponentArtifactIdentifier;
 import org.gradle.api.artifacts.component.ComponentIdentifier;
-import org.gradle.api.artifacts.component.ProjectComponentIdentifier;
 import org.gradle.api.artifacts.result.DependencyResult;
-import org.gradle.api.artifacts.result.ResolvedArtifactResult;
-import org.gradle.api.artifacts.result.ResolvedComponentResult;
 import org.gradle.api.artifacts.result.ResolvedDependencyResult;
-import org.gradle.api.artifacts.type.ArtifactTypeDefinition;
-import org.gradle.api.attributes.Attribute;
 import org.gradle.api.file.ConfigurableFileCollection;
-import org.gradle.api.file.FileCollection;
-import org.gradle.api.file.ProjectLayout;
 import org.gradle.api.file.RegularFileProperty;
-import org.gradle.api.provider.ListProperty;
 import org.gradle.api.provider.MapProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.CompileClasspath;
@@ -53,22 +32,17 @@ import org.gradle.api.tasks.Internal;
 import org.gradle.api.tasks.Nested;
 import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.TaskAction;
-import org.gradle.internal.component.external.model.ModuleComponentArtifactIdentifier;
 import org.gradle.work.DisableCachingByDefault;
 
-import io.quarkus.bootstrap.BootstrapConstants;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
-import io.quarkus.bootstrap.model.CapabilityContract;
 import io.quarkus.bootstrap.model.DefaultApplicationModel;
-import io.quarkus.bootstrap.model.PlatformImportsImpl;
-import io.quarkus.bootstrap.resolver.AppModelResolverException;
-import io.quarkus.bootstrap.workspace.SourceDir;
 import io.quarkus.bootstrap.workspace.WorkspaceModule;
 import io.quarkus.bootstrap.workspace.WorkspaceModuleId;
-import io.quarkus.fs.util.ZipUtils;
 import io.quarkus.gradle.tooling.DefaultProjectDescriptor;
+import io.quarkus.gradle.tooling.GradlePomResolver;
 import io.quarkus.gradle.tooling.ProjectDescriptor;
 import io.quarkus.gradle.tooling.ToolingUtils;
+import io.quarkus.gradle.tooling.dependency.DeclaredDepsResult;
 import io.quarkus.gradle.tooling.dependency.DependencyDataCollector;
 import io.quarkus.maven.dependency.ArtifactCoords;
 import io.quarkus.maven.dependency.ArtifactDependency;
@@ -78,10 +52,9 @@ import io.quarkus.maven.dependency.GACTV;
 import io.quarkus.maven.dependency.ResolvedDependencyBuilder;
 import io.quarkus.paths.PathList;
 import io.quarkus.runtime.LaunchMode;
-import io.quarkus.runtime.util.HashUtil;
 
-@DisableCachingByDefault(because = "Not cacheable")
-public abstract class QuarkusApplicationModelTask extends DefaultTask {
+@DisableCachingByDefault(because = "The serialized application model contains resolved file-system paths and is not relocatable")
+public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
 
     /* @formatter:off */
     private static final byte COLLECT_TOP_EXTENSION_RUNTIME_NODES = 0b001;
@@ -91,11 +64,11 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
 
     public static final String QUARKUS_PROJECT_DESCRIPTOR_ARTIFACT_TYPE = "quarkus-project-descriptor";
 
+    private final QuarkusResolvedClasspath compileOnlyClasspath;
+    private final QuarkusResolvedClasspath deploymentClasspath;
+
     @Internal
     public abstract RegularFileProperty getProjectBuildFile();
-
-    @Inject
-    public abstract ProjectLayout getLayout();
 
     /**
      * Used just to track original classpath as an input, since resolving quarkus classpath is kinda expensive,
@@ -104,8 +77,12 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
     @CompileClasspath
     public abstract ConfigurableFileCollection getOriginalClasspath();
 
-    @Input
-    public abstract ListProperty<String> getDeploymentClasspathSnapshot();
+    /**
+     * Tracks deployment artifacts as a Gradle-native file input for local up-to-date checks.
+     * The resolved graph itself is consumed through the lazy resolution-result properties below.
+     */
+    @CompileClasspath
+    public abstract ConfigurableFileCollection getDeploymentClasspathFiles();
 
     @Nested
     public abstract QuarkusResolvedClasspath getPlatformConfiguration();
@@ -113,11 +90,15 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
     @Nested
     public abstract QuarkusResolvedClasspath getAppClasspath();
 
-    @Nested
-    public abstract QuarkusResolvedClasspath getDeploymentClasspath();
+    @Internal
+    public QuarkusResolvedClasspath getDeploymentClasspath() {
+        return deploymentClasspath;
+    }
 
-    @Nested
-    public abstract QuarkusResolvedClasspath getCompileOnlyClasspath();
+    @Internal
+    public QuarkusResolvedClasspath getCompileOnlyClasspath() {
+        return compileOnlyClasspath;
+    }
 
     @Nested
     public abstract QuarkusPlatformInfo getPlatformInfo();
@@ -134,23 +115,15 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
     @Input
     public abstract Property<DefaultProjectDescriptor> getProjectDescriptor();
 
-    @Input
-    public abstract Property<Boolean> getDeclaredDependencyCollectorEnabled();
-
     @Internal
-    public abstract MapProperty<ArtifactKey, DependencyDataCollector.DeclaredDepsResult> getDeclaredDependencies();
-
-    /**
-     * Snapshot here is declared as input, since it's used for incremental builds/caching,
-     * while the actual map of declared dependencies is declared as internal.
-     */
-    @Input
-    public abstract ListProperty<String> getDeclaredDependenciesSnapshot();
+    public abstract MapProperty<ArtifactKey, DeclaredDepsResult> getDeclaredDependencies();
 
     @OutputFile
     public abstract RegularFileProperty getApplicationModel();
 
     public QuarkusApplicationModelTask() {
+        compileOnlyClasspath = getObjects().newInstance(QuarkusResolvedClasspath.class);
+        deploymentClasspath = getObjects().newInstance(QuarkusResolvedClasspath.class);
         getProjectBuildFile().set(getProject().getBuildFile());
     }
 
@@ -169,16 +142,29 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
         collectExtensionDependencies(getDeploymentClasspath(), modelBuilder);
         collectCompileOnlyDependencies(getCompileOnlyClasspath(), modelBuilder);
 
-        if (getDeclaredDependencyCollectorEnabled().get()) {
-            var declaredDependencies = getDeclaredDependencies().get();
-            DependencyDataCollector.setDirectDeps(appArtifact, modelBuilder, declaredDependencies, getLogger());
-            for (ResolvedDependencyBuilder dep : modelBuilder.getDependencies()) {
-                DependencyDataCollector.setDirectDeps(dep, modelBuilder, declaredDependencies, getLogger());
-            }
+        var declaredDependencies = new HashMap<>(getDeclaredDependencies().get());
+        var collector = new DependencyDataCollector(
+                new GradlePomResolver(getDependencyHandler(), getMavenLocalRepositoryRoots()),
+                getProviderFactory().systemPropertiesPrefixedBy("")::get);
+        declaredDependencies.putAll(collector.collectExternalDeclaredDependencies(getLogger(),
+                DependencyDataCollector.externalModuleDeclaredDependencyInputs(Stream.concat(
+                        getAppClasspath().getResolvedArtifacts().get().stream(),
+                        getDeploymentClasspath().getResolvedArtifacts().get().stream()).toList())));
+        DependencyDataCollector.setDirectDeps(appArtifact, modelBuilder, declaredDependencies, getLogger());
+        for (ResolvedDependencyBuilder dep : modelBuilder.getDependencies()) {
+            DependencyDataCollector.setDirectDeps(dep, modelBuilder, declaredDependencies, getLogger());
         }
 
         DefaultApplicationModel model = modelBuilder.build();
         ToolingUtils.serializeAppModel(model, getApplicationModel().get().getAsFile().toPath());
+    }
+
+    private List<File> getMavenLocalRepositoryRoots() {
+        String mavenRepoLocal = getProviderFactory().systemProperty("maven.repo.local").getOrNull();
+        if (mavenRepoLocal == null || mavenRepoLocal.isBlank()) {
+            return List.of();
+        }
+        return List.of(new File(mavenRepoLocal));
     }
 
     private ResolvedDependencyBuilder getProjectArtifact(DefaultProjectDescriptor projectDescriptor) {
@@ -207,16 +193,6 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
         return appArtifact.setWorkspaceModule(module);
     }
 
-    private static void collectDestinationDirs(Collection<SourceDir> sources, final PathList.Builder paths) {
-        for (SourceDir src : sources) {
-            final Path path = src.getOutputDir();
-            if (paths.contains(path) || !Files.exists(path)) {
-                continue;
-            }
-            paths.add(path);
-        }
-    }
-
     private void collectDependencies(QuarkusResolvedClasspath classpath, ApplicationModelBuilder modelBuilder,
             WorkspaceModule.Mutable wsModule, ProjectDescriptor projectDescriptor) {
         final Map<ComponentIdentifier, List<QuarkusResolvedArtifact>> artifacts = classpath
@@ -238,43 +214,7 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
         Set<File> fileDependencies = new HashSet<>(classpath.getAllResolvedFiles().getFiles());
 
         fileDependencies.removeAll(alreadyCollectedFiles);
-        fileDependenciesExtractor(modelBuilder, fileDependencies);
-    }
-
-    private static void fileDependenciesExtractor(ApplicationModelBuilder modelBuilder, Set<File> fileDependencies) {
-        // detect FS paths that are direct file dependencies and are not part of resolution graph
-        for (File f : fileDependencies) {
-            if (!f.exists()) {
-                continue;
-            }
-            // here we are trying to represent a direct FS path dependency
-            // as an artifact dependency
-            // SHA1 hash is used to avoid long file names in the lib dir
-            final String parentPath = f.getParent();
-            final String group = HashUtil.sha1(parentPath == null ? f.getName() : parentPath);
-            String name = f.getName();
-            String type = ArtifactCoords.TYPE_JAR;
-            if (!f.isDirectory()) {
-                final int dot = f.getName().lastIndexOf('.');
-                if (dot > 0) {
-                    name = f.getName().substring(0, dot);
-                    type = f.getName().substring(dot + 1);
-                }
-            }
-            // hash could be a better way to represent the version
-            final String version = String.valueOf(f.lastModified());
-            final ResolvedDependencyBuilder artifactBuilder = ResolvedDependencyBuilder.newInstance()
-                    .setGroupId(group)
-                    .setArtifactId(name)
-                    .setType(type)
-                    .setVersion(version)
-                    .setResolvedPath(f.toPath())
-                    .setDirect(true)
-                    .setRuntimeCp()
-                    .setDeploymentCp();
-            processQuarkusDependency(artifactBuilder, modelBuilder);
-            modelBuilder.addDependency(artifactBuilder);
-        }
+        addFileDependencies(modelBuilder, fileDependencies);
     }
 
     private static void collectDependencies(
@@ -346,14 +286,8 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
             }
             if (isFlagOn(flags, COLLECT_RELOADABLE_MODULES)) {
                 if (!depBuilder.isRuntimeExtensionArtifact()
-                        && (projectModule != null
-                                // Checking whether current dependency is a project module is a temporary workaround,
-                                // that is required while projectModule for project dependencies is null (current
-                                // deficiency of this task).
-                                // That's why we set the workspace module flag explicitly via setWorkspaceModule().
-                                // Once we have projectModule set for project dependencies, we can remove this workaround.
-                                || resolvedDependency.getSelected().getId() instanceof ProjectComponentIdentifier)) {
-                    depBuilder.setReloadable().setWorkspaceModule();
+                        && projectModule != null) {
+                    depBuilder.setReloadable();
                     modelBuilder.addReloadableWorkspaceModule(artifactKey);
                 } else {
                     newFlags = clearFlag(newFlags, COLLECT_RELOADABLE_MODULES);
@@ -404,6 +338,9 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
             boolean clearReloadableFlag) {
         final ModuleVersionIdentifier moduleId = getModuleVersion(resolvedDependency);
         if (!processedModules.add(moduleId)) {
+            if (clearReloadableFlag) {
+                clearReloadableWorkspaceModule(resolvedDependency, modelBuilder, resolvedArtifacts);
+            }
             return;
         }
         List<QuarkusResolvedArtifact> artifacts = getResolvedModuleArtifacts(resolvedArtifacts,
@@ -435,7 +372,7 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
             }
             dep.setDeploymentCp();
             if (clearReloadableFlag) {
-                dep.clearFlag(DependencyFlags.RELOADABLE);
+                clearReloadableWorkspaceModule(modelBuilder, dep);
             } else if (!dep.isReloadable()) {
                 clearReloadableFlagChildren = true;
             }
@@ -447,6 +384,31 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
                         clearReloadableFlagChildren);
             }
         }
+    }
+
+    private static void clearReloadableWorkspaceModule(
+            ResolvedDependencyResult resolvedDependency,
+            ApplicationModelBuilder modelBuilder,
+            Map<ComponentIdentifier, List<QuarkusResolvedArtifact>> resolvedArtifacts) {
+        final ModuleVersionIdentifier moduleVersionIdentifier = getModuleVersion(resolvedDependency);
+        for (QuarkusResolvedArtifact artifact : getResolvedModuleArtifacts(resolvedArtifacts,
+                resolvedDependency.getSelected().getId())) {
+            ArtifactKey artifactKey = getKey(
+                    moduleVersionIdentifier.getGroup(),
+                    moduleVersionIdentifier.getName(),
+                    moduleVersionIdentifier.getVersion(),
+                    artifact.file,
+                    artifact.type);
+            ResolvedDependencyBuilder dep = modelBuilder.getDependency(artifactKey);
+            if (dep != null) {
+                clearReloadableWorkspaceModule(modelBuilder, dep);
+            }
+        }
+    }
+
+    private static void clearReloadableWorkspaceModule(ApplicationModelBuilder modelBuilder, ResolvedDependencyBuilder dep) {
+        dep.clearFlag(DependencyFlags.RELOADABLE);
+        modelBuilder.removeReloadableWorkspaceModule(dep.getKey());
     }
 
     private static void collectCompileOnlyDependencies(QuarkusResolvedClasspath classpath,
@@ -528,203 +490,4 @@ public abstract class QuarkusApplicationModelTask extends DefaultTask {
                 .setFlags(allFlags);
     }
 
-    public static List<String> deploymentClasspathSnapshot(ArtifactCollection artifactCollection, Path projectDir) {
-        return artifactCollection.getArtifacts().stream()
-                .map(artifact -> deploymentArtifactSnapshot(artifact, projectDir))
-                .sorted()
-                .collect(toList());
-    }
-
-    private static String deploymentArtifactSnapshot(ResolvedArtifactResult artifact, Path projectDir) {
-        var attributes = artifact.getVariant().getAttributes();
-        return artifact.getId().getDisplayName() + "|" + artifact.getId().getComponentIdentifier().getDisplayName() + "|"
-                + artifact.getFile().getName() + "|"
-                // Use lastModified and length to distinguish rebuilt artifacts with the same name,
-                // identifier, version, and selected variant.
-                // A content checksum would be more precise, but it would add file I/O while Gradle
-                // calculates task inputs before execution. This task is not cacheable, so the
-                // timestamp/size pair is the pragmatic local up-to-date check here.
-                + artifact.getFile().lastModified() + "|"
-                + artifact.getFile().length() + "|"
-                + projectArtifactPath(artifact, projectDir) + "|"
-                + attributes.keySet().stream()
-                        .sorted(Comparator.comparing(Attribute::getName))
-                        .map(attribute -> attribute.getName() + "=" + attributes.getAttribute(attribute))
-                        .collect(Collectors.joining(","));
-    }
-
-    private static String projectArtifactPath(ResolvedArtifactResult artifact, Path projectDir) {
-        if (!(artifact.getId().getComponentIdentifier() instanceof ProjectComponentIdentifier)) {
-            return "";
-        }
-        return projectDir.toAbsolutePath().normalize()
-                .relativize(artifact.getFile().toPath().toAbsolutePath().normalize())
-                .toString()
-                .replace(File.separatorChar, '/');
-    }
-
-    public static abstract class QuarkusPlatformInfo {
-
-        /**
-         * Internal since we track defined dependencies via {@link QuarkusApplicationModelTask#getOriginalClasspath}
-         */
-        @Internal
-        public abstract Property<ArtifactCollection> getResolvedArtifactCollection();
-
-        private PlatformImportsImpl resolvePlatformImports() {
-            final PlatformImportsImpl result = new PlatformImportsImpl();
-            for (var artifact : getResolvedArtifactCollection().get().getArtifacts()) {
-                var compId = ((ModuleComponentArtifactIdentifier) artifact.getId()).getComponentIdentifier();
-                final String artifactId = artifact.getFile().getName();
-                if (artifactId.endsWith(".json")) {
-                    result.addPlatformDescriptor(compId.getGroup(), compId.getModuleIdentifier().getName(), compId.getVersion(),
-                            "json", compId.getVersion());
-                } else if (artifactId.endsWith(".properties")) {
-                    try {
-                        result.addPlatformProperties(compId.getGroup(), compId.getModuleIdentifier().getName(),
-                                ArtifactCoords.DEFAULT_CLASSIFIER, "json", compId.getVersion(), artifact.getFile().toPath());
-                    } catch (AppModelResolverException e) {
-                        throw new RuntimeException("Failed to add platform properties " + artifact, e);
-                    }
-                }
-            }
-            return result;
-        }
-
-        public void configureFrom(Configuration configuration) {
-            getResolvedArtifactCollection().set(configuration.getIncoming().getArtifacts());
-        }
-    }
-
-    /**
-     * See example https://docs.gradle.org/current/samples/sample_tasks_with_dependency_resolution_result_inputs.html,
-     * to better understand how this works.
-     */
-    public static abstract class QuarkusResolvedClasspath {
-
-        /**
-         * Internal since we track defined dependencies via {@link QuarkusApplicationModelTask#getOriginalClasspath}
-         */
-        @Internal
-        public abstract Property<ResolvedComponentResult> getRoot();
-
-        /**
-         * Internal since we track defined dependencies via {@link QuarkusApplicationModelTask#getOriginalClasspath}
-         */
-        @Internal
-        public abstract Property<ArtifactCollection> getResolvedArtifactCollection();
-
-        private FileCollection getAllResolvedFiles() {
-            return getResolvedArtifactCollection().get().getArtifactFiles();
-        }
-
-        private Map<ComponentIdentifier, List<QuarkusResolvedArtifact>> resolvedArtifactsByComponentIdentifier() {
-            return getQuarkusResolvedArtifacts().stream()
-                    .collect(Collectors.groupingBy(artifact -> artifact.getId().getComponentIdentifier()));
-        }
-
-        private List<QuarkusResolvedArtifact> getQuarkusResolvedArtifacts() {
-            return getResolvedArtifactCollection().get().getArtifacts().stream()
-                    .map(this::toResolvedArtifact)
-                    .collect(toList());
-        }
-
-        private QuarkusResolvedArtifact toResolvedArtifact(ResolvedArtifactResult result) {
-            String type = result.getVariant().getAttributes().getAttribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE);
-            return new QuarkusResolvedArtifact(result.getId(), result.getFile(), type);
-        }
-
-        public void configureFrom(Configuration configuration) {
-            ResolvableDependencies resolvableDependencies = configuration.getIncoming();
-            getRoot().set(resolvableDependencies.getResolutionResult().getRootComponent());
-            getResolvedArtifactCollection().set(resolvableDependencies.getArtifacts());
-        }
-    }
-
-    public static class QuarkusResolvedArtifact implements Serializable {
-
-        private static final long serialVersionUID = 1L;
-
-        private final ComponentArtifactIdentifier id;
-        private final String type;
-        private final File file;
-
-        public QuarkusResolvedArtifact(ComponentArtifactIdentifier id, File file, String type) {
-            this.id = id;
-            this.type = type;
-            this.file = file;
-        }
-
-        public ComponentArtifactIdentifier getId() {
-            return id;
-        }
-
-        public String getType() {
-            return type;
-        }
-
-        public File getFile() {
-            return file;
-        }
-    }
-
-    private static boolean processQuarkusDependency(ResolvedDependencyBuilder artifactBuilder,
-            ApplicationModelBuilder modelBuilder) {
-        for (Path artifactPath : artifactBuilder.getResolvedPaths()) {
-            if (!Files.exists(artifactPath) || !artifactBuilder.getType().equals(ArtifactCoords.TYPE_JAR)) {
-                break;
-            }
-            if (Files.isDirectory(artifactPath)) {
-                return processQuarkusDir(artifactBuilder, artifactPath.resolve(BootstrapConstants.META_INF), modelBuilder);
-            } else {
-                try (FileSystem artifactFs = ZipUtils.newFileSystem(artifactPath)) {
-                    return processQuarkusDir(artifactBuilder, artifactFs.getPath(BootstrapConstants.META_INF),
-                            modelBuilder);
-                } catch (IOException e) {
-                    throw new RuntimeException("Failed to process " + artifactPath, e);
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean processQuarkusDir(ResolvedDependencyBuilder artifactBuilder, Path quarkusDir,
-            ApplicationModelBuilder modelBuilder) {
-        if (!Files.exists(quarkusDir)) {
-            return false;
-        }
-        final Path quarkusDescr = quarkusDir.resolve(BootstrapConstants.DESCRIPTOR_FILE_NAME);
-        if (!Files.exists(quarkusDescr)) {
-            return false;
-        }
-        final Properties extProps = readDescriptor(quarkusDescr);
-        if (extProps == null) {
-            return false;
-        }
-        artifactBuilder.setRuntimeExtensionArtifact();
-        modelBuilder.handleExtensionProperties(extProps, artifactBuilder.getKey());
-
-        final String providesCapabilities = extProps.getProperty(BootstrapConstants.PROP_PROVIDES_CAPABILITIES);
-        if (providesCapabilities != null) {
-            modelBuilder
-                    .addExtensionCapabilities(
-                            CapabilityContract.of(artifactBuilder.toGACTVString(), providesCapabilities, null));
-        }
-        return true;
-    }
-
-    private static Properties readDescriptor(final Path path) {
-        final Properties rtProps;
-        if (!Files.exists(path)) {
-            // not a platform artifact
-            return null;
-        }
-        rtProps = new Properties();
-        try (BufferedReader reader = Files.newBufferedReader(path)) {
-            rtProps.load(reader);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Failed to load extension description " + path, e);
-        }
-        return rtProps;
-    }
 }

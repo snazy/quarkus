@@ -14,18 +14,20 @@ import java.util.stream.Collectors;
 import org.gradle.api.DefaultTask;
 import org.gradle.api.GradleException;
 import org.gradle.api.file.RegularFileProperty;
+import org.gradle.api.provider.Property;
+import org.gradle.api.tasks.CacheableTask;
+import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.PathSensitive;
 import org.gradle.api.tasks.PathSensitivity;
 import org.gradle.api.tasks.TaskAction;
-import org.gradle.work.DisableCachingByDefault;
 
 import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.gradle.tooling.ToolingUtils;
 import io.quarkus.maven.dependency.ArtifactCoords;
 
-@DisableCachingByDefault(because = "Not cacheable")
+@CacheableTask
 public abstract class ImageCheckRequirementsTask extends DefaultTask {
 
     @OutputFile
@@ -36,11 +38,15 @@ public abstract class ImageCheckRequirementsTask extends DefaultTask {
     static final String QUARKUS_CONTAINER_IMAGE_PREFIX = "quarkus-container-image-";
     static final String QUARKUS_CONTAINER_IMAGE_BUILD = "quarkus.container-image.build";
     static final String QUARKUS_CONTAINER_IMAGE_PUSH = "quarkus.container-image.push";
-    static final String QUARKUS_CONTAINER_IMAGE_BUILDER = "quarkus.container-image.builder";
+    public static final String QUARKUS_CONTAINER_IMAGE_BUILDER = "quarkus.container-image.builder";
 
     @InputFile
     @PathSensitive(PathSensitivity.RELATIVE)
     public abstract RegularFileProperty getApplicationModel();
+
+    @Input
+    @org.gradle.api.tasks.Optional
+    public abstract Property<String> getContainerImageBuilder();
 
     static final Map<String, ImageCheckRequirementsTask.Builder> BUILDERS = new HashMap<>();
     static {
@@ -57,8 +63,8 @@ public abstract class ImageCheckRequirementsTask extends DefaultTask {
         podman
     }
 
-    Optional<ImageCheckRequirementsTask.Builder> builderFromSystemProperties() {
-        return Optional.ofNullable(System.getProperty(QUARKUS_CONTAINER_IMAGE_BUILDER))
+    Optional<ImageCheckRequirementsTask.Builder> configuredBuilder() {
+        return Optional.ofNullable(getContainerImageBuilder().getOrNull())
                 .filter(BUILDERS::containsKey)
                 .map(BUILDERS::get);
     }
@@ -80,7 +86,7 @@ public abstract class ImageCheckRequirementsTask extends DefaultTask {
     }
 
     private Builder builder() {
-        return builderFromSystemProperties()
+        return configuredBuilder()
                 .or(() -> {
                     try {
                         return availableBuilders().stream().findFirst();

@@ -26,8 +26,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import io.quarkus.gradle.extension.QuarkusPluginExtension;
 import io.quarkus.gradle.tasks.QuarkusBuild;
+import io.quarkus.gradle.tasks.QuarkusBuildTask;
+import io.quarkus.gradle.testing.BaseGradleTest;
 
-public class QuarkusPluginTest {
+public class QuarkusPluginTest extends BaseGradleTest {
 
     @Test
     public void shouldCreateTasks() {
@@ -67,6 +69,24 @@ public class QuarkusPluginTest {
         assertThat(extension.getNativeArguments().get()).containsOnly(
                 Map.entry("containerBuild", "true"),
                 Map.entry("quarkus.native.builderImage", "builder-image"));
+    }
+
+    @Test
+    public void nativeBuildShouldDisableJarPackagingForConfiguredBuildTasks() {
+        Project project = ProjectBuilder.builder().build();
+        project.getPluginManager().apply(QuarkusPlugin.ID);
+
+        QuarkusPluginExtension extension = project.getExtensions().getByType(QuarkusPluginExtension.class);
+        extension.getNativeBuild().set(true);
+
+        QuarkusBuildTask quarkusBuild = (QuarkusBuildTask) project.getTasks().getByName(QUARKUS_BUILD_TASK_NAME);
+        assertThat(quarkusBuild.getNativeEnabled().get()).isTrue();
+        assertThat(quarkusBuild.getJarEnabled().get()).isFalse();
+
+        QuarkusBuildTask quarkusAppPartsBuild = (QuarkusBuildTask) project.getTasks()
+                .getByName(QuarkusPlugin.QUARKUS_BUILD_APP_PARTS_TASK_NAME);
+        assertThat(quarkusAppPartsBuild.getNativeEnabled().get()).isTrue();
+        assertThat(quarkusAppPartsBuild.getJarEnabled().get()).isFalse();
     }
 
     @Test
@@ -137,6 +157,10 @@ public class QuarkusPluginTest {
                     id 'org.jetbrains.kotlin.jvm'
                 }
 
+                repositories {
+                    mavenCentral()
+                }
+
                 compileKotlin {
                     kotlinOptions.javaParameters = true
                 }""");
@@ -157,7 +181,7 @@ public class QuarkusPluginTest {
         BuildResult result = GradleRunner.create()
                 .withPluginClasspath()
                 .withProjectDir(testProjectDir.toFile())
-                .withArguments("quarkusGenerateCode", "--stacktrace")
+                .withArguments(defaultGradleArguments("quarkusGenerateCode", "--stacktrace"))
                 .build();
 
         assertEquals(SUCCESS, result.task(":quarkus:quarkusGenerateCode").getOutcome());

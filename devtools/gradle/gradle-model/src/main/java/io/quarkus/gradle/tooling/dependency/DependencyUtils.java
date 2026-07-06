@@ -15,20 +15,16 @@ import java.util.Set;
 
 import org.gradle.api.GradleException;
 import org.gradle.api.Project;
-import org.gradle.api.artifacts.Configuration;
 import org.gradle.api.artifacts.Dependency;
-import org.gradle.api.artifacts.ModuleDependency;
 import org.gradle.api.artifacts.ModuleVersionIdentifier;
 import org.gradle.api.artifacts.ResolvedArtifact;
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
-import org.gradle.api.capabilities.Capability;
 import org.gradle.api.initialization.IncludedBuild;
 import org.gradle.api.internal.artifacts.DefaultModuleVersionIdentifier;
 import org.gradle.api.internal.artifacts.dependencies.DefaultExternalModuleDependency;
 import org.gradle.api.provider.ListProperty;
 import org.gradle.api.tasks.SourceSet;
-import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.internal.composite.IncludedBuildInternal;
 import org.jetbrains.annotations.Nullable;
 
@@ -37,49 +33,15 @@ import io.quarkus.bootstrap.util.BootstrapUtils;
 import io.quarkus.fs.util.ZipUtils;
 import io.quarkus.gradle.extension.ConfigurationUtils;
 import io.quarkus.gradle.extension.ExtensionConstants;
+import io.quarkus.gradle.tasks.QuarkusGradleUtils;
 import io.quarkus.gradle.tooling.ToolingUtils;
 import io.quarkus.maven.dependency.ArtifactCoords;
 import io.quarkus.maven.dependency.ArtifactKey;
 
 public class DependencyUtils {
 
-    private static final String COPY_CONFIGURATION_NAME = "quarkusDependency";
-    private static final String TEST_FIXTURE_SUFFIX = "-test-fixtures";
-
-    public static Configuration duplicateConfiguration(Project project, Configuration toDuplicate) {
-        Configuration configurationCopy = project.getConfigurations().findByName(COPY_CONFIGURATION_NAME);
-        if (configurationCopy != null) {
-            project.getConfigurations().remove(configurationCopy);
-        }
-        return duplicateConfiguration(project, COPY_CONFIGURATION_NAME, toDuplicate);
-    }
-
-    public static Configuration duplicateConfiguration(Project project, String name, Configuration toDuplicate) {
-        final Configuration configurationCopy = project.getConfigurations().create(name);
-        configurationCopy.getDependencies().addAll(toDuplicate.getAllDependencies());
-        configurationCopy.getDependencyConstraints().addAll(toDuplicate.getAllDependencyConstraints());
-        return configurationCopy;
-    }
-
-    public static boolean isTestFixtureDependency(Dependency dependency) {
-        if (!(dependency instanceof ModuleDependency)) {
-            return false;
-        }
-        ModuleDependency module = (ModuleDependency) dependency;
-        for (Capability requestedCapability : module.getRequestedCapabilities()) {
-            if (requestedCapability.getName().endsWith(TEST_FIXTURE_SUFFIX)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     public static String asDependencyNotation(Dependency dependency) {
         return String.join(":", dependency.getGroup(), dependency.getName(), dependency.getVersion());
-    }
-
-    public static String asDependencyNotation(ArtifactCoords artifactCoords) {
-        return String.join(":", artifactCoords.getGroupId(), artifactCoords.getArtifactId(), artifactCoords.getVersion());
     }
 
     public static ExtensionDependency<?> getExtensionInfoOrNull(Project project, ResolvedArtifact artifact) {
@@ -87,9 +49,7 @@ public class DependencyUtils {
 
         ExtensionDependency<?> projectDependency;
 
-        if (artifact.getId().getComponentIdentifier() instanceof ProjectComponentIdentifier) {
-            ProjectComponentIdentifier componentId = (ProjectComponentIdentifier) artifact.getId().getComponentIdentifier();
-
+        if (artifact.getId().getComponentIdentifier() instanceof ProjectComponentIdentifier componentId) {
             projectDependency = getProjectExtensionDependencyOrNull(
                     project,
                     componentId.getProjectPath(),
@@ -162,8 +122,7 @@ public class DependencyUtils {
     }
 
     private static Path findLocalExtensionDescriptorPath(Project extensionProject) {
-        SourceSetContainer sourceSets = extensionProject.getExtensions().getByType(SourceSetContainer.class);
-        SourceSet mainSourceSet = sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME);
+        SourceSet mainSourceSet = QuarkusGradleUtils.findSourceSet(extensionProject, SourceSet.MAIN_SOURCE_SET_NAME);
         if (mainSourceSet == null) {
             return null;
         }

@@ -55,7 +55,7 @@ public abstract class GradleProjectBuildFile extends AbstractGradleBuildFile {
 
     @Override
     public String getProperty(String name) {
-        final Object o = project.getProperties().get(name);
+        final Object o = project.findProperty(name);
         return o == null ? null : o.toString();
     }
 

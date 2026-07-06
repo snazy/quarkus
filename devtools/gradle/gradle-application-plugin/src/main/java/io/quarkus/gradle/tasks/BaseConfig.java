@@ -5,7 +5,8 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+
+import org.gradle.api.provider.ProviderFactory;
 
 import io.quarkus.deployment.configuration.ConfigCompatibility;
 import io.quarkus.deployment.pkg.NativeConfig;
@@ -81,9 +82,8 @@ final class BaseConfig {
         return manifest;
     }
 
-    Map<String, String> cachingRelevantProperties(List<String> propertyPatterns) {
-        List<Pattern> patterns = propertyPatterns.stream().map(s -> "^(" + s + ")$").map(Pattern::compile)
-                .collect(Collectors.toList());
+    Map<String, String> cachingRelevantProperties(List<String> propertyPatterns, ProviderFactory providers) {
+        List<Pattern> patterns = propertyPatterns.stream().map(s -> "^(" + s + ")$").map(Pattern::compile).toList();
         TreeMap<String, String> result = new TreeMap<>();
 
         Predicate<Map.Entry<String, ?>> keyPredicate = e -> patterns.stream().anyMatch(p -> p.matcher(e.getKey()).matches());
@@ -98,7 +98,7 @@ final class BaseConfig {
         // only tracks that specific env var, not all env vars.
         for (String name : propertyPatterns) {
             if (!result.containsKey(name)) {
-                String envValue = System.getenv(name);
+                String envValue = providers.environmentVariable(name).getOrNull();
                 if (envValue != null) {
                     result.put(name, envValue);
                 }

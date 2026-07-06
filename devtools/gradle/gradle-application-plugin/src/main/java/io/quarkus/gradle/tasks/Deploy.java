@@ -15,7 +15,6 @@ import java.util.stream.Collectors;
 
 import javax.inject.Inject;
 
-import org.gradle.api.provider.ProviderFactory;
 import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.api.tasks.options.Option;
@@ -95,9 +94,6 @@ public abstract class Deploy extends QuarkusBuildTask {
         super("Deploy", false);
     }
 
-    @Inject
-    protected abstract ProviderFactory getProviderFactory();
-
     @TaskAction
     public void checkRequiredExtensions() {
         ApplicationModel appModel = resolveAppModelForBuild();
@@ -106,7 +102,7 @@ public abstract class Deploy extends QuarkusBuildTask {
         try (CuratedApplication curatedApplication = QuarkusBootstrap.builder()
                 .setBaseClassLoader(getClass().getClassLoader())
                 .setExistingModel(appModel)
-                .setTargetDirectory(buildDir.toPath())
+                .setTargetDirectory(getBuildDir().getAsFile().get().toPath())
                 .setBaseName(getExtensionView().getFinalName().get())
                 .setBuildSystemProperties(sysProps)
                 .setAppArtifact(appModel.getAppArtifact())
@@ -121,13 +117,13 @@ public abstract class Deploy extends QuarkusBuildTask {
                     tooMany.set(strings);
                 }
             }, DeployCommandDeclarationResultBuildItem.class.getName());
-            String target = System.getProperty("quarkus.deploy.target");
+            String target = getProviderFactory().systemProperty("quarkus.deploy.target").getOrNull();
             List<String> targets = tooMany.get();
             if (targets.isEmpty() && target == null) {
                 // Currently forcedDependencies() is not implemented for gradle.
                 // So, let's give users a meaningful warning message.
                 Deployer deployer = getDeployerFromDependencies(appModel);
-                extension().forcedPropertiesProperty().convention(
+                extension().getForcedProperties().convention(
                         getProviderFactory().provider(() -> {
                             Map<String, String> props = new HashMap<>();
                             props.put("quarkus." + deployer.name() + ".deploy", "true");
@@ -172,7 +168,7 @@ public abstract class Deploy extends QuarkusBuildTask {
                         "Unknown quarkus.deploy.target: " + target + " Extensions: "
                                 + targets.stream().collect(Collectors.joining(" ")));
             } else {
-                extension().forcedPropertiesProperty().convention(
+                extension().getForcedProperties().convention(
                         getProviderFactory().provider(() -> {
                             Map<String, String> props = new HashMap<>();
                             props.put(QUARKUS_IGNORE_LEGACY_DEPLOY_BUILD, "true");

@@ -1,58 +1,43 @@
 package io.quarkus.gradle.tasks;
 
+import java.io.IOException;
+
 import javax.inject.Inject;
 
-import org.gradle.api.artifacts.Configuration;
-import org.gradle.api.tasks.CompileClasspath;
+import org.gradle.api.file.RegularFileProperty;
+import org.gradle.api.tasks.InputFile;
+import org.gradle.api.tasks.PathSensitive;
+import org.gradle.api.tasks.PathSensitivity;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.work.DisableCachingByDefault;
 
-import io.quarkus.runtime.LaunchMode;
+import io.quarkus.gradle.tooling.ToolingUtils;
 
 @DisableCachingByDefault(because = "Not cacheable")
 public abstract class QuarkusGoOffline extends QuarkusTask {
 
-    private Configuration compileClasspath;
-    private Configuration testCompileClasspath;
-    private Configuration quarkusDevClasspath;
-
     @Inject
     public QuarkusGoOffline() {
-        super("Resolve all dependencies for offline usage");
+        super("Resolve all dependencies for offline usage", true);
     }
 
-    @CompileClasspath
-    public Configuration getCompileClasspath() {
-        return compileClasspath;
-    }
+    @InputFile
+    @PathSensitive(PathSensitivity.RELATIVE)
+    public abstract RegularFileProperty getApplicationModel();
 
-    public void setCompileClasspath(Configuration compileClasspath) {
-        this.compileClasspath = compileClasspath;
-    }
+    @InputFile
+    @PathSensitive(PathSensitivity.RELATIVE)
+    public abstract RegularFileProperty getDevApplicationModel();
 
-    @CompileClasspath
-    public Configuration getTestCompileClasspath() {
-        return testCompileClasspath;
-    }
-
-    public void setTestCompileClasspath(Configuration testCompileClasspath) {
-        this.testCompileClasspath = testCompileClasspath;
-    }
-
-    @CompileClasspath
-    public Configuration getQuarkusDevClasspath() {
-        return quarkusDevClasspath;
-    }
-
-    public void setQuarkusDevClasspath(Configuration quarkusDevClasspath) {
-        this.quarkusDevClasspath = quarkusDevClasspath;
-    }
+    @InputFile
+    @PathSensitive(PathSensitivity.RELATIVE)
+    public abstract RegularFileProperty getTestApplicationModel();
 
     @TaskAction
-    public void resolveAllModels() {
-        extension().getApplicationModel(LaunchMode.NORMAL);
-        extension().getApplicationModel(LaunchMode.DEVELOPMENT);
-        extension().getApplicationModel(LaunchMode.TEST);
+    public void resolveAllModels() throws IOException {
+        ToolingUtils.deserializeAppModel(getApplicationModel().get().getAsFile().toPath());
+        ToolingUtils.deserializeAppModel(getDevApplicationModel().get().getAsFile().toPath());
+        ToolingUtils.deserializeAppModel(getTestApplicationModel().get().getAsFile().toPath());
     }
 
 }

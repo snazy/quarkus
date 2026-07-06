@@ -1,16 +1,22 @@
 package io.quarkus.gradle.tasks;
 
+import java.io.IOException;
 import java.util.List;
 
 import org.gradle.api.GradleException;
+import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.tasks.Input;
+import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.Optional;
+import org.gradle.api.tasks.PathSensitive;
+import org.gradle.api.tasks.PathSensitivity;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.api.tasks.options.Option;
 import org.gradle.work.DisableCachingByDefault;
 
 import io.quarkus.devtools.commands.UpdateProject;
 import io.quarkus.devtools.project.QuarkusProject;
+import io.quarkus.gradle.tooling.ToolingUtils;
 import io.quarkus.maven.dependency.ArtifactCoords;
 import io.quarkus.registry.RegistryResolutionException;
 import io.quarkus.registry.catalog.ExtensionCatalog;
@@ -137,13 +143,17 @@ public abstract class QuarkusUpdate extends QuarkusPlatformTask {
         this.targetPlatformVersion = targetPlatformVersion;
     }
 
+    @InputFile
+    @PathSensitive(PathSensitivity.RELATIVE)
+    public abstract RegularFileProperty getApplicationModel();
+
     public QuarkusUpdate() {
         super("Log Quarkus-specific recommended project updates, such as the new Quarkus platform BOM versions, new versions of Quarkus extensions that aren't managed by the Quarkus BOMs, etc");
     }
 
     @TaskAction
-    public void logUpdates() {
-        getLogger().warn(getName() + " is experimental, its options and output might change in future versions");
+    public void logUpdates() throws IOException {
+        getLogger().warn("{} is experimental, its options and output might change in future versions", getName());
         final QuarkusProject quarkusProject = getQuarkusProject(false);
         final ExtensionCatalog targetCatalog;
         try {
@@ -188,7 +198,7 @@ public abstract class QuarkusUpdate extends QuarkusPlatformTask {
         if (rewrite != null) {
             invoker.rewrite(rewrite);
         }
-        invoker.appModel(extension().getApplicationModel());
+        invoker.appModel(ToolingUtils.deserializeAppModel(getApplicationModel().get().getAsFile().toPath()));
         try {
             invoker.execute();
         } catch (Exception e) {

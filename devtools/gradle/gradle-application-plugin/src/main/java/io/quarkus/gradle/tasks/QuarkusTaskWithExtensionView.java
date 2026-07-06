@@ -1,5 +1,7 @@
 package io.quarkus.gradle.tasks;
 
+import static org.gradle.api.tasks.SourceSet.MAIN_SOURCE_SET_NAME;
+
 import org.gradle.api.java.archives.Attributes;
 import org.gradle.api.provider.MapProperty;
 import org.gradle.api.tasks.Input;
@@ -37,7 +39,9 @@ public abstract class QuarkusTaskWithExtensionView extends QuarkusTask {
 
     public QuarkusTaskWithExtensionView(String description, boolean compatible) {
         super(description, compatible);
-        this.extensionView = getProject().getObjects().newInstance(QuarkusPluginExtensionView.class, extension());
+        var mainSourceDirectories = QuarkusGradleUtils.getSourceSet(getProject(), MAIN_SOURCE_SET_NAME)
+                .getResources().getSourceDirectories();
+        this.extensionView = getObjects().newInstance(QuarkusPluginExtensionView.class, extension(), mainSourceDirectories);
     }
 
     public EffectiveConfigProvider effectiveProvider() {

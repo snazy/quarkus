@@ -90,7 +90,7 @@ public abstract class QuarkusBuildTask extends QuarkusTaskWithExtensionView {
         return classpath;
     }
 
-    private FileCollection classpath = getProject().getObjects().fileCollection();
+    private FileCollection classpath = getObjects().fileCollection();
 
     public void setCompileClasspath(FileCollection compileClasspath) {
         this.classpath = compileClasspath;
@@ -137,7 +137,7 @@ public abstract class QuarkusBuildTask extends QuarkusTaskWithExtensionView {
     }
 
     Path gradleBuildDir() {
-        return buildDir.toPath();
+        return getBuildDir().getAsFile().get().toPath();
     }
 
     Path genBuildDir() {
@@ -153,32 +153,32 @@ public abstract class QuarkusBuildTask extends QuarkusTaskWithExtensionView {
     }
 
     File artifactProperties() {
-        return new File(buildDir, QUARKUS_ARTIFACT_PROPERTIES);
+        return getBuildDir().map(d -> d.file(QUARKUS_ARTIFACT_PROPERTIES)).get().getAsFile();
     }
 
     File nativeSources() {
-        return new File(buildDir, NATIVE_SOURCES);
+        return getBuildDir().map(d -> d.dir(NATIVE_SOURCES)).get().getAsFile();
     }
 
     /**
      * "final" location of the "fast-jar".
      */
     File fastJar() {
-        return new File(buildDir, outputDirectory());
+        return getBuildDir().map(d -> d.dir(outputDirectory())).get().getAsFile();
     }
 
     /**
      * "final" location of the "uber-jar".
      */
     File runnerJar() {
-        return new File(buildDir, runnerJarFileName());
+        return getBuildDir().map(d -> d.file(runnerJarFileName())).get().getAsFile();
     }
 
     /**
      * "final" location of the "native" runner.
      */
     File nativeRunner() {
-        return new File(buildDir, nativeRunnerFileName());
+        return getBuildDir().map(d -> d.file(nativeRunnerFileName())).get().getAsFile();
     }
 
     String runnerJarFileName() {

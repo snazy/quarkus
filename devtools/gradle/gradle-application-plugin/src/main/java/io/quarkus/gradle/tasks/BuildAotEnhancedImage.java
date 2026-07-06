@@ -33,7 +33,7 @@ public abstract class BuildAotEnhancedImage extends QuarkusBuildTask {
 
     @TaskAction
     public void buildAotEnhancedImage() {
-        File buildDirectory = buildDir;
+        File buildDirectory = getBuildDir().getAsFile().get();
         Path metadataFilePath = buildDirectory.toPath().resolve(QUARKUS_CONTAINER_IT_PROPERTIES);
 
         if (!Files.exists(metadataFilePath)) {

@@ -38,6 +38,7 @@ public abstract class QuarkusBuild extends QuarkusBuildTask {
     @Inject
     public QuarkusBuild() {
         super("Builds a Quarkus application.", true);
+        getIgnoredEntries().set(extension().getIgnoredEntries());
     }
 
     /**
@@ -56,18 +57,12 @@ public abstract class QuarkusBuild extends QuarkusBuildTask {
         return this;
     }
 
-    @Internal
-    public ListProperty<String> getIgnoredEntries() {
-        return extension().ignoredEntriesProperty();
-    }
-
     @Option(description = "When using the uber-jar option, this option can be used to "
             + "specify one or more entries that should be excluded from the final jar", option = "ignored-entry")
-    public void setIgnoredEntries(List<String> ignoredEntries) {
-        getIgnoredEntries().addAll(ignoredEntries);
-    }
-
     @Internal
+    public abstract ListProperty<String> getIgnoredEntries();
+
+    @Internal // public DSL
     public Manifest getManifest() {
         return extension().manifest();
     }
@@ -78,21 +73,25 @@ public abstract class QuarkusBuild extends QuarkusBuildTask {
         return this;
     }
 
+    @SuppressWarnings("unused") // public DSL
     @Internal
     public File getRunnerJar() {
         return runnerJar();
     }
 
+    @SuppressWarnings("unused") // public DSL
     @Internal
     public File getNativeRunner() {
         return nativeRunner();
     }
 
+    @SuppressWarnings("unused") // public DSL
     @Internal
     public File getFastJar() {
         return fastJar();
     }
 
+    @SuppressWarnings("unused") // public DSL
     @Internal
     public File getArtifactProperties() {
         return artifactProperties();
@@ -240,13 +239,13 @@ public abstract class QuarkusBuild extends QuarkusBuildTask {
 
     void reportDeprecatedDslUsages() {
         getExtensionView().deprecatedDslUsageReporter().report(getLogger(),
-                gradleBuildDir().resolve(DeprecatedGradleDslUsageReporter.REPORT_PATH).toFile());
+                getBuildDir().file(DeprecatedGradleDslUsageReporter.REPORT_PATH).get().getAsFile());
     }
 
     private void assembleLegacyJar() {
         getLogger().info("Finalizing Quarkus build for {} JAR type", jarType());
 
-        Path buildDir = this.buildDir.toPath();
+        Path buildDir = getBuildDir().getAsFile().get().toPath();
         Path libDir = buildDir.resolve("lib");
         Path depBuildDir = depBuildDir();
         Path appBuildDir = appBuildDir();
@@ -290,7 +289,7 @@ public abstract class QuarkusBuild extends QuarkusBuildTask {
     }
 
     private void assembleFullBuild() {
-        File targetDir = buildDir;
+        File targetDir = getBuildDir().getAsFile().get();
 
         // build/quarkus-build/gen
         Path genBuildDir = genBuildDir();
@@ -345,6 +344,7 @@ public abstract class QuarkusBuild extends QuarkusBuildTask {
     }
 
     private void copyRunnersAndArtifactProperties(Path sourceDir) {
+        var buildDir = getBuildDir().getAsFile().get();
         if (nativeEnabled()) {
             if (nativeSourcesOnly()) {
                 getLogger().info("Copying remaining Quarkus application artifacts for native sources from {} into {}",

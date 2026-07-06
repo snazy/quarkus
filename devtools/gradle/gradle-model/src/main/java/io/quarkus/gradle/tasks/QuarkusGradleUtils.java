@@ -6,12 +6,9 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import org.gradle.api.Project;
-import org.gradle.api.file.FileCollection;
 import org.gradle.api.tasks.SourceSet;
 import org.gradle.api.tasks.SourceSetContainer;
 
@@ -29,20 +26,8 @@ public class QuarkusGradleUtils {
         return getSourceSets(project).getByName(sourceSetName);
     }
 
-    public static String getClassesDir(SourceSet sourceSet, File tmpDir, boolean test) {
-        return getClassesDir(sourceSet, tmpDir, true, test);
-    }
-
-    public static String getClassesDir(SourceSet sourceSet, File tmpDir, boolean populated, boolean test) {
-        final FileCollection classesDirs = sourceSet.getOutput().getClassesDirs();
-        final Set<File> classDirFiles = classesDirs.getFiles();
-        if (classDirFiles.size() == 1) {
-            return classesDirs.getAsPath();
-        }
-        final Set<Path> classesPaths = new HashSet<>(classDirFiles.size());
-        classesDirs.forEach(f -> classesPaths.add(f.toPath()));
-        final Path merged = mergeClassesDirs(classesPaths, tmpDir, populated, test);
-        return merged == null ? null : merged.toString();
+    public static SourceSet findSourceSet(Project project, String sourceSetName) {
+        return getSourceSets(project).findByName(sourceSetName);
     }
 
     public static Path mergeClassesDirs(Collection<Path> classesDirs, File tmpDir, boolean populated, boolean test) {

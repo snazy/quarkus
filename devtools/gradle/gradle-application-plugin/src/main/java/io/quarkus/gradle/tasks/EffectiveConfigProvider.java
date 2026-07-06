@@ -72,7 +72,7 @@ public class EffectiveConfigProvider {
         additionalForcedProperties.forEach((k, v) -> {
             forced.put(k, v.toString());
         });
-        if (nativeBuild.get()) {
+        if (nativeBuild.getOrElse(false)) {
             forced.put("quarkus.native.enabled", "true");
         }
         return EffectiveConfig.builder()

@@ -10,16 +10,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import javax.inject.Inject;
+
 import org.gradle.api.Action;
 import org.gradle.api.GradleException;
 import org.gradle.api.Project;
-import org.gradle.api.file.FileCollection;
+import org.gradle.api.file.ConfigurableFileCollection;
 import org.gradle.api.java.archives.Attributes;
 import org.gradle.api.provider.ListProperty;
 import org.gradle.api.provider.MapProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.provider.ProviderFactory;
+import org.gradle.api.tasks.Input;
+import org.gradle.api.tasks.Internal;
 import org.gradle.api.tasks.SourceSet;
 import org.gradle.process.JavaForkOptions;
 
@@ -36,58 +40,52 @@ public abstract class AbstractQuarkusExtension {
     private static final String MANIFEST_ATTRIBUTES_PROPERTY_PREFIX = "quarkus.package.jar.manifest.attributes";
 
     protected static final String QUARKUS_PROFILE = "quarkus.profile";
-    protected final Project project;
-    protected final File projectDir;
-    protected final Property<String> finalName;
-    private final MapProperty<String, String> forcedPropertiesProperty;
+    private final Property<BaseConfig> baseConfigProperty;
     private final DeprecatedGradleDslUsageReporter deprecatedDslUsageReporter = new DeprecatedGradleDslUsageReporter();
-    protected final MapProperty<String, String> quarkusBuildProperties;
-    protected final MapProperty<String, String> nativeArguments;
-    protected final ListProperty<String> cachingRelevantProperties;
-    private final ListProperty<String> ignoredEntries;
-    private final FileCollection classpath;
-    private final Property<BaseConfig> baseConfig;
     protected final List<Action<? super JavaForkOptions>> codeGenForkOptions;
     protected final List<Action<? super JavaForkOptions>> buildForkOptions;
 
     protected AbstractQuarkusExtension(Project project) {
-        this.project = project;
-        this.projectDir = project.getProjectDir();
-        this.finalName = project.getObjects().property(String.class);
-        this.finalName.convention(project.provider(() -> String.format("%s-%s", project.getName(), project.getVersion())));
-        this.forcedPropertiesProperty = project.getObjects().mapProperty(String.class, String.class);
-        this.quarkusBuildProperties = project.getObjects().mapProperty(String.class, String.class);
-        this.nativeArguments = project.getObjects().mapProperty(String.class, String.class);
-        this.cachingRelevantProperties = project.getObjects().listProperty(String.class)
-                .value(List.of("quarkus[.].*", "platform[.]quarkus[.].*"));
-        this.ignoredEntries = project.getObjects().listProperty(String.class);
-        this.ignoredEntries.convention(
+        this.baseConfigProperty = project.getObjects().property(BaseConfig.class);
+        getFinalName().convention(project.provider(() -> String.format("%s-%s", project.getName(), project.getVersion())));
+        getCachingRelevantProperties().value(List.of("quarkus[.].*", "platform[.]quarkus[.].*"));
+        getIgnoredEntries().convention(
                 project.provider(() -> baseConfig().packageConfig().jar().userConfiguredIgnoredEntries().orElse(emptyList())));
-        this.baseConfig = project.getObjects().property(BaseConfig.class).value(project.provider(this::buildBaseConfig));
-        SourceSet mainSourceSet = getSourceSet(project, SourceSet.MAIN_SOURCE_SET_NAME);
-        this.classpath = dependencyClasspath(mainSourceSet);
+        getBaseConfig().value(project.provider(this::buildBaseConfig));
+        getSourceDirectories()
+                .from(getSourceSet(project, SourceSet.MAIN_SOURCE_SET_NAME).getResources().getSourceDirectories());
         this.codeGenForkOptions = new ArrayList<>();
         this.buildForkOptions = new ArrayList<>();
     }
+
+    @Internal
+    protected abstract ConfigurableFileCollection getSourceDirectories();
+
+    @Inject
+    protected abstract ProviderFactory getProviderFactory();
 
     private BaseConfig buildBaseConfig() {
         // Using a ValueSource to construct the "base config" map. The ValueSource wraps all
         // SmallRyeConfig construction (which internally calls System.getProperties()) in an
         // opaque boundary, so Gradle's configuration cache does not track individual system
         // property accesses as inputs. Only the final result map is compared between builds.
-        Set<File> resourcesDirs = getSourceSet(project, SourceSet.MAIN_SOURCE_SET_NAME).getResources().getSourceDirectories()
-                .getFiles();
+        Set<File> resourcesDirs = getSourceDirectories().getFiles();
+
+        var providers = getProviderFactory();
 
         // Filter project properties to quarkus-relevant ones to avoid tracking all project
         // properties as configuration cache inputs.
-        Map<String, String> filteredProjectProperties = getQuarkusRelevantProjectProperties();
+        Map<String, String> filteredProjectProperties = quarkusRelevantProperties(providers).get();
 
-        Provider<Map<String, String>> configMapProvider = project.getProviders()
+        Provider<Map<String, String>> configMapProvider = providers
                 .of(QuarkusConfigValueSource.class, spec -> {
-                    spec.getParameters().getBuildProperties().set(quarkusBuildProperties);
-                    spec.getParameters().getProjectProperties().set(filteredProjectProperties);
-                    spec.getParameters().getSourceDirectories().set(resourcesDirs);
-                    spec.getParameters().getProfile().set(quarkusProfile());
+                    var params = spec.getParameters();
+                    params.getBuildProperties().set(getQuarkusBuildProperties());
+                    params.getProjectProperties().set(filteredProjectProperties);
+                    params.getSourceDirectories().set(resourcesDirs);
+                    params.getProfile().set(quarkusProfile());
+                    params.getJavaHome().set(providers.systemProperty("java.home"));
+                    params.getUserHome().set(providers.systemProperty("user.home"));
                 });
 
         return new BaseConfig(configMapProvider.get());
@@ -101,21 +99,22 @@ public abstract class AbstractQuarkusExtension {
      * enumerates the whole project property bag and is not allowed under Isolated Projects, while the
      * former returns only the matching keys and is configuration-cache friendly.
      */
-    private Map<String, String> getQuarkusRelevantProjectProperties() {
-        Map<String, String> result = new HashMap<>();
-        ProviderFactory providers = project.getProviders();
-        result.putAll(providers.gradlePropertiesPrefixedBy("quarkus.").get());
-        result.putAll(providers.gradlePropertiesPrefixedBy("platform.quarkus.").get());
-        return result;
+    static Provider<Map<String, String>> quarkusRelevantProperties(ProviderFactory providers) {
+        // gradlePropertiesPrefixedBy is configuration-cache and Isolated-Projects friendly, unlike
+        // Project.getProperties() which is not allowed under Isolated Projects and deprecated.
+        var quarkusProjectProperties = providers.gradlePropertiesPrefixedBy("quarkus.");
+        var platformQuarkusProjectProperties = providers.gradlePropertiesPrefixedBy("platform.quarkus.");
+        return quarkusProjectProperties.zip(platformQuarkusProjectProperties,
+                (quarkus, platform) -> {
+                    Map<String, String> merged = new HashMap<>(quarkus);
+                    merged.putAll(platform);
+                    return merged;
+                });
     }
 
-    public BaseConfig baseConfig() {
-        this.baseConfig.finalizeValue();
-        return this.baseConfig.get();
-    }
-
-    protected MapProperty<String, String> forcedPropertiesProperty() {
-        return forcedPropertiesProperty;
+    @Internal
+    Property<BaseConfig> getBaseConfig() {
+        return baseConfigProperty;
     }
 
     /**
@@ -125,17 +124,31 @@ public abstract class AbstractQuarkusExtension {
         return deprecatedDslUsageReporter;
     }
 
-    protected void recordDeprecatedDslUsageInternal(String api, String replacement) {
-        deprecatedDslUsageReporter.record(api, replacement);
+    BaseConfig baseConfig() {
+        getBaseConfig().finalizeValue();
+        return getBaseConfig().get();
     }
 
-    protected ListProperty<String> ignoredEntriesProperty() {
-        return ignoredEntries;
-    }
+    @Internal
+    protected abstract Property<String> getFinalName();
 
-    protected FileCollection classpath() {
-        return classpath;
-    }
+    @Internal
+    protected abstract ListProperty<String> getCachingRelevantProperties();
+
+    @Internal
+    protected abstract ListProperty<String> getIgnoredEntries();
+
+    @Internal
+    protected abstract MapProperty<String, String> getQuarkusBuildProperties();
+
+    @Internal
+    protected abstract MapProperty<String, String> getForcedProperties();
+
+    @Internal
+    protected abstract MapProperty<String, String> getNativeArguments();
+
+    @Input
+    public abstract Property<Boolean> getNativeBuild();
 
     public Manifest manifest() {
         return baseConfig().manifest();
@@ -150,7 +163,7 @@ public abstract class AbstractQuarkusExtension {
     }
 
     public Map<String, String> cachingRelevantProperties(List<String> propertyPatterns) {
-        return baseConfig().cachingRelevantProperties(propertyPatterns);
+        return baseConfig().cachingRelevantProperties(propertyPatterns, getProviderFactory());
     }
 
     public NativeConfig nativeConfig() {
@@ -159,28 +172,23 @@ public abstract class AbstractQuarkusExtension {
 
     private String quarkusProfile() {
         // Use Gradle Provider API for CC-compatible single property lookups
-        String profile = project.getProviders().systemProperty(QUARKUS_PROFILE).getOrNull();
+        var providers = getProviderFactory();
+        String profile = providers.systemProperty(QUARKUS_PROFILE).getOrNull();
         if (profile == null) {
-            profile = project.getProviders().environmentVariable("QUARKUS_PROFILE").getOrNull();
+            profile = providers.environmentVariable("QUARKUS_PROFILE").getOrNull();
         }
         if (profile == null) {
-            profile = quarkusBuildProperties.get().get(QUARKUS_PROFILE);
+            profile = getQuarkusBuildProperties().getting(QUARKUS_PROFILE).getOrNull();
         }
         if (profile == null) {
             // gradleProperty instead of Project.getProperties().get(...), which is not allowed under
             // Isolated Projects.
-            profile = project.getProviders().gradleProperty(QUARKUS_PROFILE).getOrNull();
+            profile = providers.gradleProperty(QUARKUS_PROFILE).getOrNull();
         }
         if (profile == null) {
             profile = "prod";
         }
         return profile;
-    }
-
-    private static FileCollection dependencyClasspath(SourceSet mainSourceSet) {
-        return mainSourceSet.getCompileClasspath().plus(mainSourceSet.getRuntimeClasspath())
-                .plus(mainSourceSet.getAnnotationProcessorPath())
-                .plus(mainSourceSet.getResources());
     }
 
     protected static String toManifestAttributeKey(String key) {

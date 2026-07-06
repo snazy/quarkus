@@ -36,12 +36,11 @@ public abstract class QuarkusConfigValueSource
         implements ValueSource<Map<String, String>, QuarkusConfigValueSource.Params> {
 
     /**
+     * {@link #getJavaHome()} and {@link #getUserHome()}
      * JVM system properties included in the output for expression expansion in
      * config mapping defaults (e.g., {@code quarkus.native.java-home} defaults to {@code ${java.home}}).
      * These are stable across builds (tied to JVM installation, not build invocation).
      */
-    private static final String[] EXPRESSION_EXPANSION_PROPERTIES = { "java.home", "user.home" };
-
     interface Params extends ValueSourceParameters {
         MapProperty<String, String> getBuildProperties();
 
@@ -50,6 +49,10 @@ public abstract class QuarkusConfigValueSource
         SetProperty<File> getSourceDirectories();
 
         Property<String> getProfile();
+
+        Property<String> getJavaHome();
+
+        Property<String> getUserHome();
     }
 
     @Nullable
@@ -87,11 +90,11 @@ public abstract class QuarkusConfigValueSource
 
         // Include stable JVM properties needed for expression expansion when BaseConfig
         // reconstructs a SmallRyeConfig from this map.
-        for (String prop : EXPRESSION_EXPANSION_PROPERTIES) {
-            String value = System.getProperty(prop);
-            if (value != null) {
-                filtered.putIfAbsent(prop, value);
-            }
+        if (params.getJavaHome().isPresent()) {
+            filtered.putIfAbsent("java.home", params.getJavaHome().get());
+        }
+        if (params.getUserHome().isPresent()) {
+            filtered.putIfAbsent("user.home", params.getUserHome().get());
         }
 
         return Collections.unmodifiableMap(filtered);

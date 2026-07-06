@@ -32,19 +32,15 @@ import io.smallrye.config.SmallRyeConfig;
 @DisableCachingByDefault(because = "Not cacheable")
 public abstract class QuarkusShowEffectiveConfig extends QuarkusBuildTask {
 
-    private final Property<Boolean> saveConfigProperties;
-
     @Inject
     public QuarkusShowEffectiveConfig() {
         super("Collect dependencies for the Quarkus application, prefer the 'quarkusBuild' task", true);
-        this.saveConfigProperties = getProject().getObjects().property(Boolean.class).convention(Boolean.FALSE);
+        getSaveConfigProperties().convention(Boolean.FALSE);
     }
 
     @Option(option = "save-config-properties", description = "Save the effective Quarkus configuration properties to a file.")
     @Internal
-    public Property<Boolean> getSaveConfigProperties() {
-        return saveConfigProperties;
-    }
+    public abstract Property<Boolean> getSaveConfigProperties();
 
     @TaskAction
     public void dumpEffectiveConfiguration() {
@@ -90,7 +86,7 @@ public abstract class QuarkusShowEffectiveConfig extends QuarkusBuildTask {
             if (getSaveConfigProperties().get()) {
                 Properties props = new Properties();
                 props.putAll(effectiveConfig.getValues());
-                Path file = buildDir.toPath().resolve(finalName + ".quarkus-build.properties");
+                Path file = getBuildDir().getAsFile().get().toPath().resolve(finalName + ".quarkus-build.properties");
                 try (BufferedWriter writer = newBufferedWriter(file)) {
                     props.store(writer, format("Quarkus build properties with JAR type %s", jarType));
                 } catch (IOException e) {

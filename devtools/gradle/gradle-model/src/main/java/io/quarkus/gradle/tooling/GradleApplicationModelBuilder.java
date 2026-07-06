@@ -1,26 +1,22 @@
 package io.quarkus.gradle.tooling;
 
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.addFileDependencies;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.collectDestinationDirs;
+import static io.quarkus.gradle.tooling.ApplicationModelBuilderSupport.processQuarkusDependency;
 import static io.quarkus.gradle.tooling.ToolingUtils.getClassesOutputDir;
-import static io.quarkus.gradle.tooling.dependency.DependencyDataCollector.declaredDependencyCollectorEnabled;
 import static io.quarkus.gradle.tooling.dependency.DependencyUtils.getArtifactCoords;
 import static io.quarkus.gradle.tooling.dependency.DependencyUtils.getKey;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.FileSystem;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.Set;
 
 import org.gradle.api.Project;
@@ -49,7 +45,6 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompileTool;
 import io.quarkus.bootstrap.BootstrapConstants;
 import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
-import io.quarkus.bootstrap.model.CapabilityContract;
 import io.quarkus.bootstrap.model.PlatformImports;
 import io.quarkus.bootstrap.model.gradle.ModelParameter;
 import io.quarkus.bootstrap.model.gradle.impl.ModelParameterImpl;
@@ -60,8 +55,9 @@ import io.quarkus.bootstrap.workspace.LazySourceDir;
 import io.quarkus.bootstrap.workspace.SourceDir;
 import io.quarkus.bootstrap.workspace.WorkspaceModule;
 import io.quarkus.bootstrap.workspace.WorkspaceModuleId;
-import io.quarkus.fs.util.ZipUtils;
 import io.quarkus.gradle.dependency.ApplicationDeploymentClasspathBuilder;
+import io.quarkus.gradle.tasks.QuarkusGradleUtils;
+import io.quarkus.gradle.tooling.dependency.DeclaredDepsResult;
 import io.quarkus.gradle.tooling.dependency.DependencyDataCollector;
 import io.quarkus.maven.dependency.ArtifactCoords;
 import io.quarkus.maven.dependency.ArtifactDependency;
@@ -71,7 +67,6 @@ import io.quarkus.maven.dependency.ResolvedDependencyBuilder;
 import io.quarkus.paths.PathCollection;
 import io.quarkus.paths.PathList;
 import io.quarkus.runtime.LaunchMode;
-import io.quarkus.runtime.util.HashUtil;
 
 public class GradleApplicationModelBuilder implements ParameterizedToolingModelBuilder<ModelParameter> {
 
@@ -113,21 +108,18 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
         final Configuration deploymentConfig = classpathBuilder.getDeploymentConfiguration();
         final PlatformImports platformImports = classpathBuilder.getPlatformImports();
 
-        boolean workspaceDiscovery = LaunchMode.DEVELOPMENT.equals(mode) || LaunchMode.TEST.equals(mode)
-                || Boolean.parseBoolean(System.getProperty(BootstrapConstants.QUARKUS_BOOTSTRAP_WORKSPACE_DISCOVERY));
-        if (!workspaceDiscovery) {
-            // gradleProperty instead of Project.getProperties().get(...), which is not allowed under
-            // Isolated Projects (this builder also runs as a tooling model builder).
-            String o = project.getProviders().gradleProperty(BootstrapConstants.QUARKUS_BOOTSTRAP_WORKSPACE_DISCOVERY)
-                    .getOrNull();
-            if (o != null) {
-                workspaceDiscovery = Boolean.parseBoolean(o);
-            }
-        }
+        // ProviderFactory.systemProperty/gradleProperty instead of System.getProperty/Project.getProperties().get(...),
+        // which is not allowed under Isolated Projects (this builder also runs as a tooling model builder).
+        boolean workspaceDiscovery = LaunchMode.DEVELOPMENT.equals(mode)
+                || LaunchMode.TEST.equals(mode)
+                || project.getProviders().systemProperty(BootstrapConstants.QUARKUS_BOOTSTRAP_WORKSPACE_DISCOVERY)
+                        .orElse(project.getProviders().gradleProperty(BootstrapConstants.QUARKUS_BOOTSTRAP_WORKSPACE_DISCOVERY))
+                        .map(Boolean::parseBoolean).getOrElse(false);
 
-        final DependencyDataCollector collector = new DependencyDataCollector(project);
+        final DependencyDataCollector collector = new DependencyDataCollector(project.getDependencies(),
+                project.getProviders());
         // we only collect from deployment config, since it is a superset of the runtime config.
-        final Map<ArtifactKey, DependencyDataCollector.DeclaredDepsResult> declaredDeps = collector
+        final Map<ArtifactKey, DeclaredDepsResult> declaredDeps = collector
                 .collectDeclaredDependencies(project, deploymentConfig);
         final ResolvedDependencyBuilder appArtifact = getProjectArtifact(project, workspaceDiscovery);
         final ApplicationModelBuilder modelBuilder = new ApplicationModelBuilder()
@@ -145,12 +137,10 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
         }
         addCompileOnly(project, classpathBuilder, modelBuilder);
 
-        if (declaredDependencyCollectorEnabled(project)) {
-            Logger logger = project.getLogger();
-            DependencyDataCollector.setDirectDeps(appArtifact, modelBuilder, declaredDeps, logger);
-            for (var dep : modelBuilder.getDependencies()) {
-                DependencyDataCollector.setDirectDeps(dep, modelBuilder, declaredDeps, logger);
-            }
+        Logger logger = project.getLogger();
+        DependencyDataCollector.setDirectDeps(appArtifact, modelBuilder, declaredDeps, logger);
+        for (var dep : modelBuilder.getDependencies()) {
+            DependencyDataCollector.setDirectDeps(dep, modelBuilder, declaredDeps, logger);
         }
 
         return modelBuilder.build();
@@ -192,7 +182,7 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
                 .setArtifactId(project.getName())
                 .setVersion(project.getVersion().toString());
 
-        final SourceSetContainer sourceSets = project.getExtensions().getByType(SourceSetContainer.class);
+        final SourceSetContainer sourceSets = QuarkusGradleUtils.getSourceSets(project);
         final WorkspaceModule.Mutable mainModule = WorkspaceModule.builder()
                 .setModuleId(
                         WorkspaceModuleId.of(appArtifact.getGroupId(), appArtifact.getArtifactId(), appArtifact.getVersion()))
@@ -236,16 +226,6 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
         collectDestinationDirs(mainModule.getMainSources().getResourceDirs(), paths);
 
         return appArtifact.setWorkspaceModule(mainModule).setResolvedPaths(paths.build());
-    }
-
-    private static void collectDestinationDirs(Collection<SourceDir> sources, final PathList.Builder paths) {
-        for (SourceDir src : sources) {
-            final Path path = src.getOutputDir();
-            if (paths.contains(path) || !Files.exists(path)) {
-                continue;
-            }
-            paths.add(path);
-        }
     }
 
     private void collectExtensionDependencies(Project project, Configuration deploymentConfiguration,
@@ -292,7 +272,7 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
                     }
                     Objects.requireNonNull(projectDep,
                             () -> "project " + projectComponentIdentifier.getProjectPath() + " should exist");
-                    SourceSetContainer sourceSets = projectDep.getExtensions().getByType(SourceSetContainer.class);
+                    SourceSetContainer sourceSets = QuarkusGradleUtils.getSourceSets(projectDep);
 
                     SourceSet mainSourceSet = sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME);
                     if (mainSourceSet == null) {
@@ -360,7 +340,7 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
                 }
                 Objects.requireNonNull(projectDep,
                         () -> "project " + projectComponentIdentifier.getProjectPath() + " should exist");
-                SourceSetContainer sourceSets = projectDep.getExtensions().getByType(SourceSetContainer.class);
+                SourceSetContainer sourceSets = QuarkusGradleUtils.getSourceSets(projectDep);
 
                 dep = toDependency(a, sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME));
                 modelBuilder.addDependency(dep);
@@ -387,39 +367,9 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
 
         if (artifactFiles != null) {
             // detect FS paths that aren't provided by the resolved artifacts
-            for (File f : dependencies.getFiles().getFiles()) {
-                if (artifactFiles.contains(f) || !f.exists()) {
-                    continue;
-                }
-                // here we are trying to represent a direct FS path dependency
-                // as an artifact dependency
-                // SHA1 hash is used to avoid long file names in the lib dir
-                final String parentPath = f.getParent();
-                final String group = HashUtil.sha1(parentPath == null ? f.getName() : parentPath);
-                String name = f.getName();
-                String type = ArtifactCoords.TYPE_JAR;
-                if (!f.isDirectory()) {
-                    final int dot = f.getName().lastIndexOf('.');
-                    if (dot > 0) {
-                        name = f.getName().substring(0, dot);
-                        type = f.getName().substring(dot + 1);
-                    }
-                }
-                // hash could be a better way to represent the version
-                final String version = String.valueOf(f.lastModified());
-                final ResolvedDependencyBuilder artifactBuilder = ResolvedDependencyBuilder.newInstance()
-                        .setGroupId(group)
-                        .setArtifactId(name)
-                        .setType(type)
-                        .setVersion(version)
-                        .setResolvedPath(f.toPath())
-                        .setDirect(true)
-                        .setRuntimeCp()
-                        .setDeploymentCp();
-                processQuarkusDependency(artifactBuilder, modelBuilder);
-                // depInfoCollector is not used to handle artifact dependencies at this point.
-                modelBuilder.addDependency(artifactBuilder);
-            }
+            Set<File> fileDependencies = new LinkedHashSet<>(dependencies.getFiles().getFiles());
+            fileDependencies.removeAll(artifactFiles);
+            addFileDependencies(modelBuilder, fileDependencies);
         }
     }
 
@@ -545,64 +495,6 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
         }
 
         appModel.addReloadableWorkspaceModule(appDep.getKey());
-    }
-
-    private boolean processQuarkusDependency(ResolvedDependencyBuilder artifactBuilder, ApplicationModelBuilder modelBuilder) {
-        for (Path artifactPath : artifactBuilder.getResolvedPaths()) {
-            if (!Files.exists(artifactPath) || !artifactBuilder.getType().equals(ArtifactCoords.TYPE_JAR)) {
-                break;
-            }
-            if (Files.isDirectory(artifactPath)) {
-                return processQuarkusDir(artifactBuilder, artifactPath.resolve(BootstrapConstants.META_INF), modelBuilder);
-            } else {
-                try (FileSystem artifactFs = ZipUtils.newFileSystem(artifactPath)) {
-                    return processQuarkusDir(artifactBuilder, artifactFs.getPath(BootstrapConstants.META_INF), modelBuilder);
-                } catch (IOException e) {
-                    throw new RuntimeException("Failed to process " + artifactPath, e);
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean processQuarkusDir(ResolvedDependencyBuilder artifactBuilder, Path quarkusDir,
-            ApplicationModelBuilder modelBuilder) {
-        if (!Files.exists(quarkusDir)) {
-            return false;
-        }
-        final Path quarkusDescr = quarkusDir.resolve(BootstrapConstants.DESCRIPTOR_FILE_NAME);
-        if (!Files.exists(quarkusDescr)) {
-            return false;
-        }
-        final Properties extProps = readDescriptor(quarkusDescr);
-        if (extProps == null) {
-            return false;
-        }
-        artifactBuilder.setRuntimeExtensionArtifact();
-        modelBuilder.handleExtensionProperties(extProps, artifactBuilder.getKey());
-
-        final String providesCapabilities = extProps.getProperty(BootstrapConstants.PROP_PROVIDES_CAPABILITIES);
-        if (providesCapabilities != null) {
-            modelBuilder
-                    .addExtensionCapabilities(
-                            CapabilityContract.of(artifactBuilder.toGACTVString(), providesCapabilities, null));
-        }
-        return true;
-    }
-
-    private static Properties readDescriptor(final Path path) {
-        final Properties rtProps;
-        if (!Files.exists(path)) {
-            // not a platform artifact
-            return null;
-        }
-        rtProps = new Properties();
-        try (BufferedReader reader = Files.newBufferedReader(path)) {
-            rtProps.load(reader);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Failed to load extension description " + path, e);
-        }
-        return rtProps;
     }
 
     private static void initProjectModule(Project project, WorkspaceModule.Mutable module, SourceSet sourceSet,
@@ -755,14 +647,11 @@ public class GradleApplicationModelBuilder implements ParameterizedToolingModelB
     }
 
     public static boolean isFlagOn(byte walkingFlags, byte flag) {
-        return (walkingFlags & flag) > 0;
+        return ApplicationModelBuilderSupport.isFlagOn(walkingFlags, flag);
     }
 
     public static byte clearFlag(byte flags, byte flag) {
-        if ((flags & flag) > 0) {
-            flags ^= flag;
-        }
-        return flags;
+        return ApplicationModelBuilderSupport.clearFlag(flags, flag);
     }
 
     private static boolean isDependency(ResolvedArtifact a) {

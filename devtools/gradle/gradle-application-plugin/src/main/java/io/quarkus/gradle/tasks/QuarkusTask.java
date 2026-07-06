@@ -9,7 +9,9 @@ import java.util.Map;
 import javax.inject.Inject;
 
 import org.gradle.api.Action;
-import org.gradle.api.DefaultTask;
+import org.gradle.api.file.DirectoryProperty;
+import org.gradle.api.provider.Property;
+import org.gradle.api.tasks.Internal;
 import org.gradle.process.JavaForkOptions;
 import org.gradle.work.DisableCachingByDefault;
 import org.gradle.workers.ProcessWorkerSpec;
@@ -20,33 +22,51 @@ import io.quarkus.gradle.extension.QuarkusPluginExtension;
 import io.smallrye.common.os.OS;
 
 @DisableCachingByDefault(because = "Not cacheable")
-public abstract class QuarkusTask extends DefaultTask {
+public abstract class QuarkusTask extends QuarkusBaseTask {
     private static final List<String> WORKER_BUILD_FORK_OPTIONS = List.of("quarkus.", "platform.quarkus.", "gradle.quarkus.");
 
     private final transient QuarkusPluginExtension extension;
-    protected final File projectDir;
-    protected final File buildDir;
 
     QuarkusTask(String description) {
         this(description, false);
     }
 
     QuarkusTask(String description, boolean configurationCacheCompatible) {
+        this(description,
+                configurationCacheCompatible ? null : "The Quarkus Plugin isn't compatible with the configuration cache");
+    }
+
+    QuarkusTask(String description, String notConfigCacheCompatibleReason) {
         setDescription(description);
         setGroup("quarkus");
         this.extension = getProject().getExtensions().findByType(QuarkusPluginExtension.class);
-        this.projectDir = getProject().getProjectDir();
-        this.buildDir = getProject().getLayout().getBuildDirectory().getAsFile().get();
+        getProjectDir().convention(getProject().getLayout().getProjectDirectory());
+        getBuildDir().convention(getProject().getLayout().getBuildDirectory());
+
+        getPathEnvironment().set(getProject().getProviders().environmentVariable("PATH"));
+        getGradleWorkerMaxHeap().set(getProject().getProviders().systemProperty("gradle.quarkus.gradle-worker.max-heap"));
 
         // Calling this method tells Gradle that it should not fail the build. Side effect is that the configuration
         // cache will be at least degraded, but the build will not fail.
-        if (!configurationCacheCompatible) {
-            notCompatibleWithConfigurationCache("The Quarkus Plugin isn't compatible with the configuration cache");
+        if (notConfigCacheCompatibleReason != null) {
+            notCompatibleWithConfigurationCache(notConfigCacheCompatibleReason);
         }
     }
 
+    @Internal
+    protected abstract DirectoryProperty getBuildDir();
+
+    @Internal
+    protected abstract DirectoryProperty getProjectDir();
+
     @Inject
     protected abstract WorkerExecutor getWorkerExecutor();
+
+    @Internal
+    protected abstract Property<String> getPathEnvironment();
+
+    @Internal
+    protected abstract Property<String> getGradleWorkerMaxHeap();
 
     QuarkusPluginExtension extension() {
         return extension;
@@ -56,10 +76,13 @@ public abstract class QuarkusTask extends DefaultTask {
      * Whether Quarkus workers run in a forked JVM (process isolation) rather than in-process in the
      * Gradle daemon (class-loader isolation).
      */
-    static boolean isWorkerProcessIsolated() {
+    @Internal
+    boolean isWorkerProcessIsolated() {
         // Use process isolation by default, unless Gradle's started with its debugging system property or the
         // system property `gradle.quarkus.gradle-worker.no-process` is set to `true`.
-        return !(Boolean.getBoolean("org.gradle.debug") || Boolean.getBoolean("gradle.quarkus.gradle-worker.no-process"));
+        return !(getProviderFactory().systemProperty("org.gradle.debug").map(Boolean::parseBoolean).getOrElse(false) ||
+                getProviderFactory().systemProperty("gradle.quarkus.gradle-worker.no-process").map(Boolean::parseBoolean)
+                        .getOrElse(false));
     }
 
     WorkQueue workQueue(Map<String, String> configMap, List<Action<? super JavaForkOptions>> forkOptionsSupplier) {
@@ -84,13 +107,16 @@ public abstract class QuarkusTask extends DefaultTask {
             forkOptions.systemProperty("user.dir", userDir);
         }
 
-        String quarkusWorkerMaxHeap = System.getProperty("gradle.quarkus.gradle-worker.max-heap");
+        String quarkusWorkerMaxHeap = getGradleWorkerMaxHeap().getOrNull();
         if (quarkusWorkerMaxHeap != null && forkOptions.getAllJvmArgs().stream().noneMatch(arg -> arg.startsWith("-Xmx"))) {
             forkOptions.jvmArgs("-Xmx" + quarkusWorkerMaxHeap);
         }
 
-        // Pass all environment variables
-        forkOptions.environment(System.getenv());
+        // Unlike, for example, `JavaExec`, which augments the inherited environment, the fork-options for
+        // Gradle workers do _not_ inherit the environment. So we have to explicitly pass the whole environment here.
+        // This task-execution time call to `getProviderFactory().environmentVariablesPrefixedBy()` does not
+        // affect Gradle's build-cache - it's pure runtime-evaluation.
+        forkOptions.environment(getProviderFactory().environmentVariablesPrefixedBy("").get());
 
         if (OS.current() == OS.WINDOWS) {
             // On Windows, gRPC code generation is sometimes(?) unable to find "java.exe". Feels (not proven) that
@@ -104,7 +130,8 @@ public abstract class QuarkusTask extends DefaultTask {
             String javaBin = javaBinPath.toString();
             String javaHome = javaBinPath.getParent().toString();
             forkOptions.environment("JAVA_HOME", javaHome);
-            forkOptions.environment("PATH", javaBin + File.pathSeparator + System.getenv("PATH"));
+            forkOptions.environment("PATH",
+                    javaBin + File.pathSeparator + getPathEnvironment().getOrElse(""));
         }
 
         // It's kind of a "very big hammer" here, but this way we ensure that all necessary properties

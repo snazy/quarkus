@@ -43,7 +43,7 @@ public class DeploymentConfigurationResolver {
      * @param configurationName configuration name
      */
     public static void registerDeploymentConfiguration(Project project, LaunchMode mode, String configurationName) {
-        project.getConfigurations().register(configurationName,
+        project.getConfigurations().resolvable(configurationName,
                 config -> new DeploymentConfigurationResolver(project, config, mode));
     }
 

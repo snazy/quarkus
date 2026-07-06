@@ -10,19 +10,17 @@ class AdditionalForcedPropertiesTest {
 
     @Test
     void nativeArgumentsShouldBeNormalizedAndOverriddenByTaskProperties() {
-        Map<String, String> result = AdditionalForcedProperties.of(
+        Map<String, String> properties = AdditionalForcedProperties.of(
                 Map.of(
                         "containerBuild", "true",
-                        "quarkus.native.builderImage", "builder-image",
-                        "debug.enabled", "true"),
+                        "quarkus.native.builderImage", "builder-from-native-args"),
                 Map.of(
-                        "quarkus.native.container-build", "false",
-                        "quarkus.package.jar.enabled", "false"));
+                        "quarkus.native.builder-image", "builder-from-task",
+                        "quarkus.container-image.build", "true"));
 
-        assertThat(result).containsOnly(
-                Map.entry("quarkus.native.container-build", "false"),
-                Map.entry("quarkus.native.builder-image", "builder-image"),
-                Map.entry("quarkus.native.debug.enabled", "true"),
-                Map.entry("quarkus.package.jar.enabled", "false"));
+        assertThat(properties).containsOnly(
+                Map.entry("quarkus.native.container-build", "true"),
+                Map.entry("quarkus.native.builder-image", "builder-from-task"),
+                Map.entry("quarkus.container-image.build", "true"));
     }
 }
