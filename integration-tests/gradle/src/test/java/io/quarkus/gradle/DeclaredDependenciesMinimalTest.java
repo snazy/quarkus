@@ -61,7 +61,7 @@ public class DeclaredDependenciesMinimalTest extends QuarkusGradleWrapperTestBas
     @DisplayName("Generate app model and verify direct dependencies")
     public void generateAppModel() throws Exception {
         File projectDir = getProjectDir(CONSUMER_PROJECT_PATH);
-        runGradleWrapper(projectDir, "clean", ":runner:quarkusGenerateAppModel", "-PenableDeclaredDependencyCollector=true");
+        runGradleWrapper(projectDir, "clean", ":runner:quarkusGenerateAppModel");
 
         ApplicationModel appModel = ApplicationModelSerializer.deserialize(
                 projectDir.toPath().resolve("runner/build/quarkus/application-model/quarkus-app-model.dat"));
@@ -109,8 +109,7 @@ public class DeclaredDependenciesMinimalTest extends QuarkusGradleWrapperTestBas
     @DisplayName("Generate test app model and verify test-scope root dependencies")
     public void generateTestAppModel() throws Exception {
         File projectDir = getProjectDir(CONSUMER_PROJECT_PATH);
-        runGradleWrapper(projectDir, "clean", ":runner:quarkusGenerateTestAppModel",
-                "-PenableDeclaredDependencyCollector=true");
+        runGradleWrapper(projectDir, "clean", ":runner:quarkusGenerateTestAppModel");
 
         ApplicationModel appModel = ApplicationModelSerializer.deserialize(
                 projectDir.toPath().resolve("runner/build/quarkus/application-model/quarkus-app-test-model.dat"));
@@ -136,8 +135,7 @@ public class DeclaredDependenciesMinimalTest extends QuarkusGradleWrapperTestBas
     @DisplayName("Normal model does not leak test deps after test model run")
     public void normalModelDoesNotLeakTestDeps() throws Exception {
         File projectDir = getProjectDir(CONSUMER_PROJECT_PATH);
-        runGradleWrapper(projectDir, "clean", ":runner:quarkusGenerateAppModel", ":runner:quarkusGenerateTestAppModel",
-                "-PenableDeclaredDependencyCollector=true");
+        runGradleWrapper(projectDir, "clean", ":runner:quarkusGenerateAppModel", ":runner:quarkusGenerateTestAppModel");
 
         ApplicationModel normalModel = ApplicationModelSerializer.deserialize(
                 projectDir.toPath().resolve("runner/build/quarkus/application-model/quarkus-app-model.dat"));
