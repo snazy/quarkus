@@ -1,3 +1,5 @@
+import org.gradle.plugin.devel.tasks.PluginUnderTestMetadata
+
 plugins {
     id("io.quarkus.devtools.gradle-plugin")
 }
@@ -5,6 +7,7 @@ plugins {
 dependencies {
     implementation(libs.jackson.databind)
     implementation(libs.jackson.dataformat.yaml)
+    testImplementation(testFixtures(project(":gradle-model")))
 }
 
 group = "io.quarkus.extension"
@@ -21,6 +24,10 @@ gradlePlugin {
 
 tasks.withType<Test>().configureEach {
     environment("GITHUB_REPOSITORY", "some/repo")
+}
+
+tasks.named<PluginUnderTestMetadata>("pluginUnderTestMetadata") {
+    pluginClasspath.from(project(":gradle-extension-deployment-plugin").sourceSets.main.get().runtimeClasspath)
 }
 
 // to generate reproducible jars
