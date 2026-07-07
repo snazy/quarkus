@@ -164,6 +164,16 @@ public class QuarkusExtensionPluginTest extends BaseGradleTest {
         assertThat(model.getOutput()).contains("resolved deployment test application model");
     }
 
+    @Test
+    public void deploymentClasspathShouldResolveLocalExtensionDeploymentProject() throws IOException {
+        createExtensionProjectWithLocalDeploymentForApplication();
+
+        BuildResult result = buildResult(":extension:resolveAppDeploymentClasspath", "--no-configuration-cache");
+
+        assertThat(result.task(":extension:resolveAppDeploymentClasspath").getOutcome()).isEqualTo(TaskOutcome.SUCCESS);
+        assertThat(result.getOutput()).contains("deployment classpath resolved");
+    }
+
     private void createExtensionProjectWithDeploymentTest() throws IOException {
         var runtimeModule = testProjectDir.resolve("runtime");
         var runtimeClass = runtimeModule.resolve("src/main/java/runtime/Test.java");
@@ -200,6 +210,25 @@ public class QuarkusExtensionPluginTest extends BaseGradleTest {
         writeFile("settings.gradle", "include 'runtime', 'deployment'\n");
     }
 
+    private void createExtensionProjectWithLocalDeploymentForApplication() throws IOException {
+        var runtimeModule = testProjectDir.resolve("extension");
+        var runtimeClass = runtimeModule.resolve("src/main/java/extension/Test.java");
+        var deploymentModule = testProjectDir.resolve("deployment");
+        var deploymentClass = deploymentModule.resolve("src/main/java/deployment/Test.java");
+        var appModule = testProjectDir.resolve("app");
+        var appClass = appModule.resolve("src/main/java/app/App.java");
+
+        writeFile(runtimeModule.resolve("build.gradle"), localRuntimeBuildFile());
+        writeFile(runtimeClass, "package extension; public class Test {}\n");
+
+        writeFile(deploymentModule.resolve("build.gradle"), localDeploymentBuildFile());
+        writeFile(deploymentClass, "package deployment; public class Test {}\n");
+
+        writeFile(appModule.resolve("build.gradle"), appBuildFile());
+        writeFile(appClass, "package app; public class App {}\n");
+        writeFile("settings.gradle", "include 'extension', 'deployment', 'app'\n");
+    }
+
     private String runtimeBuildFile() throws IOException {
         return """
                 plugins {
@@ -232,6 +261,90 @@ public class QuarkusExtensionPluginTest extends BaseGradleTest {
                         io.quarkus.gradle.tooling.ToolingUtils.create(project(":deployment"), mode)
                         println "resolved deployment test application model"
                     }
+                }
+                """.formatted(TestUtils.getCurrentQuarkusVersion());
+    }
+
+    private String localRuntimeBuildFile() throws IOException {
+        return """
+                import io.quarkus.gradle.dependency.ApplicationDeploymentClasspathBuilder
+                import io.quarkus.runtime.LaunchMode
+
+                plugins {
+                    id 'java'
+                    id 'io.quarkus.extension'
+                }
+
+                group = 'org.acme'
+                version = '1.0.0'
+
+                repositories {
+                    mavenCentral()
+                    mavenLocal()
+                }
+
+                quarkusExtension {
+                    disableValidation = true
+                    deploymentModule = ":deployment"
+                }
+
+                dependencies {
+                    implementation enforcedPlatform("io.quarkus:quarkus-bom:%1$s")
+                    implementation "io.quarkus:quarkus-arc"
+                }
+
+                tasks.register("resolveAppDeploymentClasspath") {
+                    def appProject = project(":app")
+                    ApplicationDeploymentClasspathBuilder.initConfigurations(appProject)
+                    def classpath = new ApplicationDeploymentClasspathBuilder(appProject, LaunchMode.NORMAL)
+                    dependsOn(classpath.getDeploymentConfiguration())
+                    doLast {
+                        classpath.getDeploymentConfiguration().files
+                        println "deployment classpath resolved"
+                    }
+                }
+                """.formatted(TestUtils.getCurrentQuarkusVersion());
+    }
+
+    private String appBuildFile() throws IOException {
+        return """
+                plugins {
+                    id 'java'
+                }
+
+                group = 'org.acme'
+                version = '1.0.0'
+
+                repositories {
+                    mavenCentral()
+                    mavenLocal()
+                }
+
+                dependencies {
+                    implementation enforcedPlatform("io.quarkus:quarkus-bom:%1$s")
+                    implementation project(":extension")
+                }
+                """.formatted(TestUtils.getCurrentQuarkusVersion());
+    }
+
+    private String localDeploymentBuildFile() throws IOException {
+        return """
+                plugins {
+                    id 'io.quarkus.extension.deployment'
+                }
+
+                group = 'org.acme'
+                version = '1.0.0'
+
+                repositories {
+                    mavenCentral()
+                    mavenLocal()
+                }
+
+                dependencies {
+                    implementation enforcedPlatform("io.quarkus:quarkus-bom:%1$s")
+                    implementation "io.quarkus:quarkus-arc-deployment"
+                    implementation project(":extension")
                 }
                 """.formatted(TestUtils.getCurrentQuarkusVersion());
     }

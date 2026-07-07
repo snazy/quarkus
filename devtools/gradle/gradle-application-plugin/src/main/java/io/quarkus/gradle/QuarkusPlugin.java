@@ -42,6 +42,7 @@ import org.gradle.tooling.provider.model.ToolingModelBuilderRegistry;
 
 import io.quarkus.gradle.actions.BeforeTestAction;
 import io.quarkus.gradle.dependency.ApplicationDeploymentClasspathBuilder;
+import io.quarkus.gradle.extension.QuarkusLegacyTaskUsageLevel;
 import io.quarkus.gradle.extension.QuarkusPluginExtension;
 import io.quarkus.gradle.extension.SourceSetExtension;
 import io.quarkus.gradle.tasks.BuildAotEnhancedImage;
@@ -49,6 +50,8 @@ import io.quarkus.gradle.tasks.Deploy;
 import io.quarkus.gradle.tasks.ImageBuild;
 import io.quarkus.gradle.tasks.ImageCheckRequirementsTask;
 import io.quarkus.gradle.tasks.ImagePush;
+import io.quarkus.gradle.tasks.LegacyTaskUsageDiagnostics;
+import io.quarkus.gradle.tasks.LegacyTaskUsageDiagnostics.LegacyTaskUsage;
 import io.quarkus.gradle.tasks.QuarkusAddExtension;
 import io.quarkus.gradle.tasks.QuarkusApplicationModelTask;
 import io.quarkus.gradle.tasks.QuarkusBuild;
@@ -112,11 +115,27 @@ public class QuarkusPlugin implements Plugin<Project> {
     public static final String IMAGE_PUSH_TASK_NAME = "imagePush";
     public static final String DEPLOY_TASK_NAME = "deploy";
     public static final String BUILD_AOT_ENHANCED_IMAGE_TASK_NAME = "buildAotEnhancedImage";
+    private static final Map<String, String> LEGACY_APPLICATION_TASK_REPLACEMENTS = Map.of(
+            QUARKUS_BUILD_TASK_NAME,
+            "Apply io.quarkus.application, register an explicit named output under quarkusApplication.builds, and run quarkus<name>Build.",
+            IMAGE_BUILD_TASK_NAME,
+            "Apply io.quarkus.application, configure image output under quarkusApplication.builds.<name>.image, and run quarkus<name>ImageBuild.",
+            IMAGE_PUSH_TASK_NAME,
+            "Apply io.quarkus.application, configure image output under quarkusApplication.builds.<name>.image, and run quarkus<name>ImagePush.",
+            DEPLOY_TASK_NAME,
+            "Apply io.quarkus.application, configure deployments under quarkusApplication.builds.<name>.deployments, and run quarkus<name>DeployTo<deployment>.",
+            BUILD_AOT_ENHANCED_IMAGE_TASK_NAME,
+            "Apply io.quarkus.application, configure AOT-enhanced image output under quarkusApplication.builds.<name>.aotEnhancedImage, and run quarkus<name>AotEnhancedImageBuild.");
 
     @Deprecated
     public static final String BUILD_NATIVE_TASK_NAME = "buildNative";
     @Deprecated
     public static final String TEST_NATIVE_TASK_NAME = "testNative";
+    private static final Map<String, String> DEPRECATED_NATIVE_TASK_REPLACEMENTS = Map.of(
+            BUILD_NATIVE_TASK_NAME,
+            "Apply io.quarkus.application, register a native executable output under quarkusApplication.builds, and run quarkus<name>Build.",
+            TEST_NATIVE_TASK_NAME,
+            "Apply io.quarkus.application, register a native executable output under quarkusApplication.builds, and run quarkus<name>NativeTest.");
 
     // this name has to be the same as the directory in which the tests reside
     public static final String NATIVE_TEST_SOURCE_SET_NAME = "native-test";
@@ -154,6 +173,7 @@ public class QuarkusPlugin implements Plugin<Project> {
         createSourceSets(project);
         createConfigurations(project);
         registerTasks(project, quarkusExt);
+        registerLegacyTaskUsageDiagnostics(project, quarkusExt);
     }
 
     private void registerTasks(Project project, QuarkusPluginExtension quarkusExt) {
@@ -194,11 +214,13 @@ public class QuarkusPlugin implements Plugin<Project> {
         DependencyDataCollector depDataCollector = new DependencyDataCollector(
                 project.getDependencies(), project.getProviders());
 
-        var quarkusGenerateTestAppModelTask = ApplicationModelTaskConfigurator.registerGenerateApplicationModelTask(project,
+        var quarkusGenerateTestAppModelTask = ApplicationModelTaskConfigurator.registerLegacyGenerateApplicationModelTask(
+                project,
                 projectDescriptor, testClasspath, depDataCollector, LaunchMode.TEST);
-        var quarkusGenerateDevAppModelTask = ApplicationModelTaskConfigurator.registerGenerateApplicationModelTask(project,
+        var quarkusGenerateDevAppModelTask = ApplicationModelTaskConfigurator.registerLegacyGenerateApplicationModelTask(
+                project,
                 projectDescriptor, devClasspath, depDataCollector, LaunchMode.DEVELOPMENT);
-        var quarkusGenerateAppModelTask = ApplicationModelTaskConfigurator.registerGenerateApplicationModelTask(project,
+        var quarkusGenerateAppModelTask = ApplicationModelTaskConfigurator.registerLegacyGenerateApplicationModelTask(project,
                 projectDescriptor, normalClasspath, depDataCollector, LaunchMode.NORMAL);
         tasks.register(QUARKUS_GO_OFFLINE_TASK_NAME, QuarkusGoOffline.class, task -> {
             task.getApplicationModel()
@@ -723,6 +745,28 @@ public class QuarkusPlugin implements Plugin<Project> {
 
     private void registerModel() {
         registry.register(new GradleApplicationModelBuilder());
+    }
+
+    private void registerLegacyTaskUsageDiagnostics(Project project, QuarkusPluginExtension quarkusExt) {
+        project.getGradle().getTaskGraph().whenReady(taskGraph -> {
+            var level = quarkusExt.getDiagnostics().getLegacyTaskUsage().get();
+            if (level == QuarkusLegacyTaskUsageLevel.OFF) {
+                return;
+            }
+
+            Map<String, String> replacements = new HashMap<>(LEGACY_APPLICATION_TASK_REPLACEMENTS);
+            replacements.putAll(DEPRECATED_NATIVE_TASK_REPLACEMENTS);
+
+            var usages = taskGraph.getAllTasks().stream()
+                    .filter(task -> task.getProject().equals(project))
+                    .map(Task::getName)
+                    .filter(replacements::containsKey)
+                    .distinct()
+                    .map(taskName -> new LegacyTaskUsage(taskName, replacements.get(taskName)))
+                    .toList();
+            LegacyTaskUsageDiagnostics.report(level, usages, project.getLogger(),
+                    project.getLayout().getBuildDirectory().file(LegacyTaskUsageDiagnostics.REPORT_PATH).get().getAsFile());
+        });
     }
 
     private void configureBuildNativeTask(Project project, QuarkusPluginExtension quarkusExt) {

@@ -37,6 +37,15 @@ public class ProjectDescriptorBuilder {
         });
     }
 
+    public static Provider<DefaultProjectDescriptor> buildForCurrentProject(Project project) {
+        WorkspaceModule.Mutable module = new ProjectDescriptorBuilder(project).moduleBuilder;
+        initModuleAfterEvaluation(project, module);
+        return project.getProviders().provider(() -> {
+            refreshModuleId(project, module);
+            return new DefaultProjectDescriptor(module, Map.of(module.getId(), module));
+        });
+    }
+
     /**
      * Builds an application descriptor without registering an {@code afterEvaluate} callback.
      * Use this when the caller is already running late enough in project configuration that

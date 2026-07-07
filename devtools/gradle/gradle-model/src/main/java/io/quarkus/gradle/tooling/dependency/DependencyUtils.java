@@ -69,6 +69,11 @@ public class DependencyUtils {
                 return projectDependency;
         }
 
+        return getArtifactExtensionInfoOrNull(project, artifact);
+    }
+
+    public static ExtensionDependency<?> getArtifactExtensionInfoOrNull(Project project, ResolvedArtifact artifact) {
+        ModuleVersionIdentifier artifactId = artifact.getModuleVersion().getId();
         File artifactFile = artifact.getFile();
         if (!artifactFile.exists()) {
             return null;

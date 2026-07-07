@@ -15,7 +15,14 @@ public final class ApplicationModelTaskConfigurator {
     private ApplicationModelTaskConfigurator() {
     }
 
-    public static TaskProvider<GenerateApplicationModelTask> registerGenerateApplicationModelTask(Project project,
+    /**
+     * Registers the legacy application-model task path.
+     * <p>
+     * This path preserves the existing behavior of collecting declared dependencies from live Gradle project models during
+     * configuration. It deliberately does not add the isolated/new-plugin POM closure task because the legacy plugin still
+     * relies on its existing deployment classpath resolution behavior.
+     */
+    public static TaskProvider<GenerateApplicationModelTask> registerLegacyGenerateApplicationModelTask(Project project,
             Provider<DefaultProjectDescriptor> projectDescriptor,
             ApplicationDeploymentClasspathBuilder classpath,
             DependencyDataCollector dependencyDataCollector,
@@ -23,7 +30,7 @@ public final class ApplicationModelTaskConfigurator {
         var appModelTask = project.getTasks().register(GenerateApplicationModelTask.taskName(launchMode),
                 GenerateApplicationModelTask.class, launchMode);
         appModelTask.configure(task -> configure(project, task, projectDescriptor, classpath, dependencyDataCollector,
-                launchMode, false));
+                launchMode, false, true));
         return appModelTask;
     }
 
@@ -32,10 +39,20 @@ public final class ApplicationModelTaskConfigurator {
             ApplicationDeploymentClasspathBuilder classpath,
             DependencyDataCollector dependencyDataCollector,
             LaunchMode launchMode, boolean buildModel) {
+        configure(project, task, projectDescriptor, classpath, dependencyDataCollector, launchMode, buildModel, true);
+    }
+
+    static void configure(Project project, QuarkusApplicationModelTask task,
+            Provider<DefaultProjectDescriptor> projectDescriptor,
+            ApplicationDeploymentClasspathBuilder classpath,
+            DependencyDataCollector dependencyDataCollector,
+            LaunchMode launchMode, boolean buildModel, boolean collectProjectDeclaredDependencies) {
         task.getProjectDescriptor().set(projectDescriptor);
         task.getLaunchMode().set(launchMode);
-        task.getDeclaredDependencies().putAll(
-                dependencyDataCollector.collectProjectDeclaredDependencies(project, launchMode == LaunchMode.TEST));
+        if (collectProjectDeclaredDependencies) {
+            task.getDeclaredDependencies().putAll(
+                    dependencyDataCollector.collectProjectDeclaredDependencies(project, launchMode == LaunchMode.TEST));
+        }
         task.getTypeModel().set(task.getPath());
         task.getApplicationModel()
                 .set(project.getLayout().getBuildDirectory().file(applicationModelPath(launchMode, buildModel)));
@@ -72,4 +89,5 @@ public final class ApplicationModelTaskConfigurator {
             }
         };
     }
+
 }

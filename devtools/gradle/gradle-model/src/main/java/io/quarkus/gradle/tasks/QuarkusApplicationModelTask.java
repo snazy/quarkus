@@ -11,6 +11,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -21,16 +22,23 @@ import java.util.stream.Stream;
 import org.gradle.api.artifacts.ModuleVersionIdentifier;
 import org.gradle.api.artifacts.component.ComponentIdentifier;
 import org.gradle.api.artifacts.result.DependencyResult;
+import org.gradle.api.artifacts.result.ResolvedArtifactResult;
 import org.gradle.api.artifacts.result.ResolvedDependencyResult;
 import org.gradle.api.file.ConfigurableFileCollection;
 import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.provider.MapProperty;
 import org.gradle.api.provider.Property;
+import org.gradle.api.provider.SetProperty;
 import org.gradle.api.tasks.CompileClasspath;
 import org.gradle.api.tasks.Input;
+import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.Internal;
 import org.gradle.api.tasks.Nested;
+import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.OutputFile;
+import org.gradle.api.tasks.PathSensitive;
+import org.gradle.api.tasks.PathSensitivity;
+import org.gradle.api.tasks.SourceSet;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.work.DisableCachingByDefault;
 
@@ -42,8 +50,11 @@ import io.quarkus.gradle.tooling.DefaultProjectDescriptor;
 import io.quarkus.gradle.tooling.GradlePomResolver;
 import io.quarkus.gradle.tooling.ProjectDescriptor;
 import io.quarkus.gradle.tooling.ToolingUtils;
+import io.quarkus.gradle.tooling.dependency.DeclaredDependencyEnrichmentMode;
 import io.quarkus.gradle.tooling.dependency.DeclaredDepsResult;
 import io.quarkus.gradle.tooling.dependency.DependencyDataCollector;
+import io.quarkus.gradle.tooling.dependency.PomClosureResult;
+import io.quarkus.gradle.tooling.dependency.PomClosureResultCodec;
 import io.quarkus.maven.dependency.ArtifactCoords;
 import io.quarkus.maven.dependency.ArtifactDependency;
 import io.quarkus.maven.dependency.ArtifactKey;
@@ -84,6 +95,15 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
     @CompileClasspath
     public abstract ConfigurableFileCollection getDeploymentClasspathFiles();
 
+    @Internal
+    public abstract SetProperty<ResolvedArtifactResult> getLocalClassOutputArtifacts();
+
+    @Internal
+    public abstract SetProperty<ResolvedArtifactResult> getLocalResourceOutputArtifacts();
+
+    @CompileClasspath
+    public abstract ConfigurableFileCollection getLocalComponentOutputFiles();
+
     @Nested
     public abstract QuarkusResolvedClasspath getPlatformConfiguration();
 
@@ -118,6 +138,14 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
     @Internal
     public abstract MapProperty<ArtifactKey, DeclaredDepsResult> getDeclaredDependencies();
 
+    @Input
+    public abstract Property<DeclaredDependencyEnrichmentMode> getDeclaredDependencyEnrichmentMode();
+
+    @InputFile
+    @Optional
+    @PathSensitive(PathSensitivity.NONE)
+    public abstract RegularFileProperty getPomClosureFile();
+
     @OutputFile
     public abstract RegularFileProperty getApplicationModel();
 
@@ -125,6 +153,10 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
         compileOnlyClasspath = getObjects().newInstance(QuarkusResolvedClasspath.class);
         deploymentClasspath = getObjects().newInstance(QuarkusResolvedClasspath.class);
         getProjectBuildFile().set(getProject().getBuildFile());
+        getLocalClassOutputArtifacts().convention(Set.of());
+        getLocalResourceOutputArtifacts().convention(Set.of());
+        getDeclaredDependencies().convention(Map.of());
+        getDeclaredDependencyEnrichmentMode().convention(DeclaredDependencyEnrichmentMode.SELECTED_MODULE_POMS);
     }
 
     @TaskAction
@@ -138,25 +170,40 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
                 .setPlatformImports(getPlatformInfo().resolvePlatformImports())
                 .addReloadableWorkspaceModule(appArtifact.getKey());
 
-        collectDependencies(getAppClasspath(), modelBuilder, projectDescriptor.getWorkspaceModule(), projectDescriptor);
+        LocalOutputPaths localOutputPaths = localOutputPaths();
+        collectDependencies(getAppClasspath(), modelBuilder, projectDescriptor.getWorkspaceModule(), projectDescriptor,
+                localOutputPaths);
         collectExtensionDependencies(getDeploymentClasspath(), modelBuilder);
         collectCompileOnlyDependencies(getCompileOnlyClasspath(), modelBuilder);
 
-        var declaredDependencies = new HashMap<>(getDeclaredDependencies().get());
-        var collector = new DependencyDataCollector(
-                new GradlePomResolver(getDependencyHandler(), getMavenLocalRepositoryRoots()),
-                getProviderFactory().systemPropertiesPrefixedBy("")::get);
-        declaredDependencies.putAll(collector.collectExternalDeclaredDependencies(getLogger(),
-                DependencyDataCollector.externalModuleDeclaredDependencyInputs(Stream.concat(
-                        getAppClasspath().getResolvedArtifacts().get().stream(),
-                        getDeploymentClasspath().getResolvedArtifacts().get().stream()).toList())));
-        DependencyDataCollector.setDirectDeps(appArtifact, modelBuilder, declaredDependencies, getLogger());
-        for (ResolvedDependencyBuilder dep : modelBuilder.getDependencies()) {
-            DependencyDataCollector.setDirectDeps(dep, modelBuilder, declaredDependencies, getLogger());
+        if (getDeclaredDependencyEnrichmentMode().get() == DeclaredDependencyEnrichmentMode.SELECTED_MODULE_POMS) {
+            var declaredDependencies = new HashMap<>(getDeclaredDependencies().get());
+            declaredDependencies.putAll(collectExternalDeclaredDependencies());
+            DependencyDataCollector.setDirectDeps(appArtifact, modelBuilder, declaredDependencies, getLogger());
+            for (ResolvedDependencyBuilder dep : modelBuilder.getDependencies()) {
+                DependencyDataCollector.setDirectDeps(dep, modelBuilder, declaredDependencies, getLogger());
+            }
         }
 
         DefaultApplicationModel model = modelBuilder.build();
         ToolingUtils.serializeAppModel(model, getApplicationModel().get().getAsFile().toPath());
+    }
+
+    private Map<ArtifactKey, DeclaredDepsResult> collectExternalDeclaredDependencies() throws IOException {
+        var collector = new DependencyDataCollector(pomResolver(),
+                getProviderFactory().systemPropertiesPrefixedBy("")::get);
+        return collector.collectExternalDeclaredDependencies(getLogger(),
+                DependencyDataCollector.externalModuleDeclaredDependencyInputs(Stream.concat(
+                        getAppClasspath().getResolvedArtifacts().get().stream(),
+                        getDeploymentClasspath().getResolvedArtifacts().get().stream()).toList()));
+    }
+
+    private GradlePomResolver pomResolver() throws IOException {
+        if (!getPomClosureFile().isPresent()) {
+            return new GradlePomResolver(getDependencyHandler(), getMavenLocalRepositoryRoots());
+        }
+        PomClosureResult pomClosure = PomClosureResultCodec.read(getPomClosureFile().get().getAsFile().toPath());
+        return new GradlePomResolver(pomClosure.resolvedPoms(), pomClosure.missingPoms(), getMavenLocalRepositoryRoots());
     }
 
     private List<File> getMavenLocalRepositoryRoots() {
@@ -194,7 +241,8 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
     }
 
     private void collectDependencies(QuarkusResolvedClasspath classpath, ApplicationModelBuilder modelBuilder,
-            WorkspaceModule.Mutable wsModule, ProjectDescriptor projectDescriptor) {
+            WorkspaceModule.Mutable wsModule, ProjectDescriptor projectDescriptor,
+            LocalOutputPaths localOutputPaths) {
         final Map<ComponentIdentifier, List<QuarkusResolvedArtifact>> artifacts = classpath
                 .resolvedArtifactsByComponentIdentifier();
 
@@ -208,7 +256,7 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
                     flags |= COLLECT_RELOADABLE_MODULES;
                 }
                 collectDependencies(resolved, modelBuilder, artifacts, wsModule, alreadyCollectedFiles,
-                        processedModules, flags, projectDescriptor);
+                        processedModules, flags, projectDescriptor, localOutputPaths);
             }
         });
         Set<File> fileDependencies = new HashSet<>(classpath.getAllResolvedFiles().getFiles());
@@ -225,23 +273,27 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
             Set<File> collectedArtifactFiles,
             Set<ModuleVersionIdentifier> processedModules,
             byte flags,
-            ProjectDescriptor projectDescriptor) {
+            ProjectDescriptor projectDescriptor,
+            LocalOutputPaths localOutputPaths) {
         final ModuleVersionIdentifier moduleId = getModuleVersion(resolvedDependency);
         if (!processedModules.add(moduleId)) {
             return;
         }
         var projectModule = projectDescriptor
                 .getWorkspaceModuleOrNull(WorkspaceModuleId.of(moduleId.getGroup(), moduleId.getName(), moduleId.getVersion()));
+        boolean localWorkspaceModule = projectModule != null
+                || localOutputPaths.hasComponent(resolvedDependency.getSelected().getId());
         final List<QuarkusResolvedArtifact> artifacts = getResolvedModuleArtifacts(resolvedArtifacts,
                 resolvedDependency.getSelected().getId());
         if (artifacts.isEmpty()) {
             final byte finalFlags = flags;
+            final WorkspaceModule.Mutable currentProjectModule = projectModule;
             resolvedDependency.getSelected().getDependencies().forEach((Consumer<DependencyResult>) dependencyResult -> {
                 if (dependencyResult instanceof ResolvedDependencyResult result) {
                     collectDependencies(result, modelBuilder, resolvedArtifacts,
-                            projectModule,
+                            currentProjectModule,
                             collectedArtifactFiles,
-                            processedModules, finalFlags, projectDescriptor);
+                            processedModules, finalFlags, projectDescriptor, localOutputPaths);
                 }
             });
             return;
@@ -268,8 +320,11 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
                     .setCoords(depCoords)
                     .setRuntimeCp()
                     .setDeploymentCp()
-                    .setResolvedPath(artifact.file.toPath())
+                    .setResolvedPaths(localResolvedPathsOrArtifactPath(localOutputPaths, artifact, artifactKey))
                     .setWorkspaceModule(projectModule);
+            if (projectModule == null && localWorkspaceModule) {
+                depBuilder.setWorkspaceModule();
+            }
             if (isFlagOn(flags, COLLECT_DIRECT_DEPS)) {
                 depBuilder.setDirect(true);
                 newFlags = clearFlag(newFlags, COLLECT_DIRECT_DEPS);
@@ -286,7 +341,7 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
             }
             if (isFlagOn(flags, COLLECT_RELOADABLE_MODULES)) {
                 if (!depBuilder.isRuntimeExtensionArtifact()
-                        && projectModule != null) {
+                        && localWorkspaceModule) {
                     depBuilder.setReloadable();
                     modelBuilder.addReloadableWorkspaceModule(artifactKey);
                 } else {
@@ -301,8 +356,83 @@ public abstract class QuarkusApplicationModelTask extends QuarkusBaseTask {
             if (dependency instanceof ResolvedDependencyResult result) {
                 collectDependencies(result, modelBuilder, resolvedArtifacts, projectModule,
                         collectedArtifactFiles,
-                        processedModules, flags, projectDescriptor);
+                        processedModules, flags, projectDescriptor, localOutputPaths);
             }
+        }
+    }
+
+    private LocalOutputPaths localOutputPaths() {
+        Map<LocalOutputKey, PathList.Builder> builders = new LinkedHashMap<>();
+        collectLocalOutputPaths(getLocalClassOutputArtifacts().get(), builders);
+        collectLocalOutputPaths(getLocalResourceOutputArtifacts().get(), builders);
+        Map<LocalOutputKey, PathList> paths = new LinkedHashMap<>();
+        builders.forEach((key, builder) -> paths.put(key, builder.build()));
+        return new LocalOutputPaths(paths);
+    }
+
+    private static void collectLocalOutputPaths(Set<ResolvedArtifactResult> artifacts,
+            Map<LocalOutputKey, PathList.Builder> pathsByVariant) {
+        for (ResolvedArtifactResult artifact : artifacts) {
+            pathsByVariant.computeIfAbsent(LocalOutputKey.of(artifact), ignored -> PathList.builder())
+                    .add(artifact.getFile().toPath());
+        }
+    }
+
+    private static PathList localResolvedPathsOrArtifactPath(LocalOutputPaths localOutputPaths,
+            QuarkusResolvedArtifact artifact,
+            ArtifactKey artifactKey) {
+        PathList paths = localOutputPaths.get(artifact, artifactKey);
+        return paths == null ? PathList.of(artifact.file.toPath()) : paths;
+    }
+
+    private record LocalOutputKey(ComponentIdentifier componentIdentifier, String classifier) {
+
+        static LocalOutputKey of(ResolvedArtifactResult artifact) {
+            return new LocalOutputKey(artifact.getId().getComponentIdentifier(), classifierFromOutputPath(artifact));
+        }
+
+        static LocalOutputKey of(QuarkusResolvedArtifact artifact, ArtifactKey artifactKey) {
+            return new LocalOutputKey(artifact.id.getComponentIdentifier(), artifactKey.getClassifier());
+        }
+
+        private static String classifierFromOutputPath(ResolvedArtifactResult artifact) {
+            String sourceSetName = artifact.getFile().getName();
+            if (SourceSet.MAIN_SOURCE_SET_NAME.equals(sourceSetName)) {
+                return ArtifactCoords.DEFAULT_CLASSIFIER;
+            }
+            return camelCaseToKebabCase(sourceSetName);
+        }
+
+        private static String camelCaseToKebabCase(String value) {
+            StringBuilder result = new StringBuilder(value.length());
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (Character.isUpperCase(c)) {
+                    if (i > 0) {
+                        result.append('-');
+                    }
+                    result.append(Character.toLowerCase(c));
+                } else {
+                    result.append(c);
+                }
+            }
+            return result.toString();
+        }
+    }
+
+    private record LocalOutputPaths(Map<LocalOutputKey, PathList> pathsByVariant) {
+
+        PathList get(QuarkusResolvedArtifact artifact, ArtifactKey artifactKey) {
+            return pathsByVariant.get(LocalOutputKey.of(artifact, artifactKey));
+        }
+
+        boolean hasComponent(ComponentIdentifier componentIdentifier) {
+            for (LocalOutputKey key : pathsByVariant.keySet()) {
+                if (key.componentIdentifier().equals(componentIdentifier)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 

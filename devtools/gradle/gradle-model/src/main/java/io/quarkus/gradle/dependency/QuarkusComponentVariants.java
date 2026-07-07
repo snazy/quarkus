@@ -66,8 +66,15 @@ public class QuarkusComponentVariants {
      * @return conditional runtime classpath configuration name
      */
     public static String getConditionalConfigurationName(LaunchMode mode) {
-        return "quarkusConditional" + ApplicationDeploymentClasspathBuilder.getLaunchModeAlias(mode)
-                + "RuntimeClasspath";
+        return getConditionalConfigurationName(mode, "quarkus");
+    }
+
+    public static String getConditionalConfigurationName(LaunchMode mode, String configurationNamePrefix) {
+        var name = "quarkusConditional" + ApplicationDeploymentClasspathBuilder.getLaunchModeAlias(mode);
+        if (!isDefaultConfigurationNamePrefix(configurationNamePrefix)) {
+            name += toUpperCaseName(configurationNamePrefix);
+        }
+        return name + "RuntimeClasspath";
     }
 
     /**
@@ -80,11 +87,19 @@ public class QuarkusComponentVariants {
      * @return conditional dependency attribute
      */
     private static Attribute<String> getConditionalDependencyAttribute(String projectName, LaunchMode mode) {
+        return getConditionalDependencyAttribute(projectName, mode, "quarkus");
+    }
+
+    private static Attribute<String> getConditionalDependencyAttribute(String projectName, LaunchMode mode,
+            String configurationNamePrefix) {
         var sb = new StringBuilder()
                 .append("quarkus.")
                 .append(mode.getDefaultProfile())
-                .append(".conditional-dependency.")
-                .append(projectName);
+                .append(".");
+        if (!isDefaultConfigurationNamePrefix(configurationNamePrefix)) {
+            sb.append(configurationNamePrefix).append(".");
+        }
+        sb.append("conditional-dependency.").append(projectName);
         return Attribute.of(sb.toString(), String.class);
     }
 
@@ -98,12 +113,24 @@ public class QuarkusComponentVariants {
      * @return deployment dependency attribute
      */
     private static Attribute<String> getDeploymentDependencyAttribute(String projectName, LaunchMode mode) {
+        return getDeploymentDependencyAttribute(projectName, mode, "quarkus");
+    }
+
+    private static Attribute<String> getDeploymentDependencyAttribute(String projectName, LaunchMode mode,
+            String configurationNamePrefix) {
         var sb = new StringBuilder()
                 .append("quarkus.")
                 .append(mode.getDefaultProfile())
-                .append(".deployment-dependency.")
-                .append(projectName);
+                .append(".");
+        if (!isDefaultConfigurationNamePrefix(configurationNamePrefix)) {
+            sb.append(configurationNamePrefix).append(".");
+        }
+        sb.append("deployment-dependency.").append(projectName);
         return Attribute.of(sb.toString(), String.class);
+    }
+
+    private static boolean isDefaultConfigurationNamePrefix(String configurationNamePrefix) {
+        return "quarkus".equals(configurationNamePrefix);
     }
 
     /**
@@ -114,9 +141,14 @@ public class QuarkusComponentVariants {
      * @param mode launch mode
      */
     public static void setConditionalAttributes(Configuration config, Project project, LaunchMode mode) {
+        setConditionalAttributes(config, project, mode, "quarkus");
+    }
+
+    public static void setConditionalAttributes(Configuration config, Project project, LaunchMode mode,
+            String configurationNamePrefix) {
         config.attributes(attrs -> {
             setCommonAttributes(attrs, project.getObjects());
-            attrs.attribute(getConditionalDependencyAttribute(project.getName(), mode), ON);
+            attrs.attribute(getConditionalDependencyAttribute(project.getName(), mode, configurationNamePrefix), ON);
         });
     }
 
@@ -129,8 +161,14 @@ public class QuarkusComponentVariants {
      * @param mode launch mode
      */
     public static void setDeploymentAndConditionalAttributes(Configuration config, Project project, LaunchMode mode) {
-        setConditionalAttributes(config, project, mode);
-        config.attributes(attrs -> attrs.attribute(getDeploymentDependencyAttribute(project.getName(), mode), ON));
+        setDeploymentAndConditionalAttributes(config, project, mode, "quarkus");
+    }
+
+    public static void setDeploymentAndConditionalAttributes(Configuration config, Project project, LaunchMode mode,
+            String configurationNamePrefix) {
+        setConditionalAttributes(config, project, mode, configurationNamePrefix);
+        config.attributes(attrs -> attrs
+                .attribute(getDeploymentDependencyAttribute(project.getName(), mode, configurationNamePrefix), ON));
     }
 
     /**
@@ -174,7 +212,37 @@ public class QuarkusComponentVariants {
      */
     public static void addVariants(Project project, LaunchMode mode,
             Property<PlatformSpec> platformSpecProperty) {
-        new QuarkusComponentVariants(project, mode, platformSpecProperty).configureAndAddVariants();
+        addVariants(project, mode, platformSpecProperty, true);
+    }
+
+    /**
+     * Analyzes project configurations and adds the necessary component attributes for a specific launch mode.
+     *
+     * @param project project
+     * @param mode launch mode
+     * @param discoverLocalExtensionProjects whether dependency analysis may inspect local Gradle projects to map extension
+     *        metadata back to local deployment modules
+     */
+    public static void addVariants(Project project, LaunchMode mode,
+            Property<PlatformSpec> platformSpecProperty, boolean discoverLocalExtensionProjects) {
+        addVariants(project, mode, platformSpecProperty, discoverLocalExtensionProjects, "quarkus");
+    }
+
+    /**
+     * Analyzes project configurations and adds the necessary component attributes for a specific launch mode.
+     *
+     * @param project project
+     * @param mode launch mode
+     * @param discoverLocalExtensionProjects whether dependency analysis may inspect local Gradle projects to map extension
+     *        metadata back to local deployment modules
+     * @param configurationNamePrefix prefix used to keep private variant-aware configurations independent
+     */
+    public static void addVariants(Project project, LaunchMode mode,
+            Property<PlatformSpec> platformSpecProperty, boolean discoverLocalExtensionProjects,
+            String configurationNamePrefix) {
+        new QuarkusComponentVariants(project, mode, platformSpecProperty, discoverLocalExtensionProjects,
+                configurationNamePrefix)
+                .configureAndAddVariants();
     }
 
     private final Attribute<String> quarkusDepAttr;
@@ -185,15 +253,21 @@ public class QuarkusComponentVariants {
     private final List<ConditionalDependencyVariant> dependencyVariantQueue = new ArrayList<>();
     private final Map<String, SatisfiedExtensionDeps> satisfiedExtensionDeps = new HashMap<>();
     private final LaunchMode mode;
+    private final boolean discoverLocalExtensionProjects;
+    private final String configurationNamePrefix;
 
     private QuarkusComponentVariants(Project project, LaunchMode mode,
-            Property<PlatformSpec> platformSpecProperty) {
+            Property<PlatformSpec> platformSpecProperty, boolean discoverLocalExtensionProjects,
+            String configurationNamePrefix) {
         this.project = project;
         this.mode = mode;
         this.platformSpecProperty = platformSpecProperty;
-        this.quarkusDepAttr = getConditionalDependencyAttribute(project.getName(), mode);
+        this.discoverLocalExtensionProjects = discoverLocalExtensionProjects;
+        this.configurationNamePrefix = configurationNamePrefix;
+        this.quarkusDepAttr = getConditionalDependencyAttribute(project.getName(), mode, configurationNamePrefix);
         project.getDependencies().getAttributesSchema().attribute(quarkusDepAttr);
-        project.getDependencies().getAttributesSchema().attribute(getDeploymentDependencyAttribute(project.getName(), mode));
+        project.getDependencies().getAttributesSchema()
+                .attribute(getDeploymentDependencyAttribute(project.getName(), mode, configurationNamePrefix));
     }
 
     /**
@@ -211,11 +285,11 @@ public class QuarkusComponentVariants {
      */
     private void configureAndAddVariants() {
         project.getConfigurations().resolvable(
-                getConditionalConfigurationName(mode),
+                getConditionalConfigurationName(mode, configurationNamePrefix),
                 config -> {
                     config.setCanBeConsumed(false);
                     config.extendsFrom(getBaseConfiguration());
-                    setConditionalAttributes(config, project, mode);
+                    setConditionalAttributes(config, project, mode, configurationNamePrefix);
                     final ListProperty<Dependency> dependencyProperty = project.getObjects().listProperty(Dependency.class);
                     final AtomicInteger invocations = new AtomicInteger();
                     config.getDependencies().addAllLater(dependencyProperty.value(project.provider(() -> {
@@ -325,7 +399,7 @@ public class QuarkusComponentVariants {
         project.getDependencies().getComponents().withModule(
                 parentModule,
                 compDetails -> addDeploymentVariant(
-                        getDeploymentDependencyAttribute(project.getName(), mode),
+                        getDeploymentDependencyAttribute(project.getName(), mode, configurationNamePrefix),
                         compDetails, extDeps));
     }
 
@@ -397,7 +471,7 @@ public class QuarkusComponentVariants {
         if (!artifacts.isEmpty()) {
             for (var a : artifacts) {
                 nextParent = processedDeps.computeIfAbsent(getKey(a), key -> {
-                    var processedDep = new ProcessedDependency(a, DependencyUtils.getExtensionInfoOrNull(project, a),
+                    var processedDep = new ProcessedDependency(a, getExtensionInfoOrNull(a),
                             a.getId().getComponentIdentifier() instanceof ProjectComponentIdentifier);
                     processedDep.parent = parent;
                     processedDep.queueConditionalDeps();
@@ -492,8 +566,14 @@ public class QuarkusComponentVariants {
         return new ConditionalDependency(
                 getKey(resolvedArtifact),
                 resolvedArtifact,
-                DependencyUtils.getExtensionInfoOrNull(project, resolvedArtifact));
+                getExtensionInfoOrNull(resolvedArtifact));
 
+    }
+
+    private ExtensionDependency<?> getExtensionInfoOrNull(ResolvedArtifact artifact) {
+        return discoverLocalExtensionProjects
+                ? DependencyUtils.getExtensionInfoOrNull(project, artifact)
+                : DependencyUtils.getArtifactExtensionInfoOrNull(project, artifact);
     }
 
     private boolean isExplicitlyExcluded(Dependency dep) {

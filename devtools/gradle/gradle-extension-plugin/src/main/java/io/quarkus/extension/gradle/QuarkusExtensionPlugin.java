@@ -30,6 +30,7 @@ public class QuarkusExtensionPlugin implements Plugin<Project> {
     public static final String VALIDATE_EXTENSION_TASK_NAME = "validateExtension";
     private static final String DEPLOYMENT_CLASSPATH_CONFIGURATION_NAME = "quarkusDeploymentClasspath";
     private static final String DEPLOYMENT_MARKER_CONFIGURATION_NAME = "quarkusDeploymentMarker";
+    public static final String DEPLOYMENT_DEPENDENCY_ELEMENTS_CONFIGURATION_NAME = ExtensionConstants.EXTENSION_DEPLOYMENT_DEPENDENCY_ELEMENTS_CONFIGURATION_NAME;
 
     public static final String QUARKUS_ANNOTATION_PROCESSOR = ExtensionConstants.QUARKUS_ANNOTATION_PROCESSOR;
 
@@ -65,6 +66,9 @@ public class QuarkusExtensionPlugin implements Plugin<Project> {
         project.getPlugins().withType(
                 JavaPlugin.class,
                 javaPlugin -> {
+                    project.getConfigurations().named(JavaPlugin.RUNTIME_ELEMENTS_CONFIGURATION_NAME,
+                            configuration -> configuration
+                                    .getAttributes().attribute(ExtensionConstants.EXTENSION_RUNTIME_ATTRIBUTE, true));
                     tasks.named(JavaPlugin.PROCESS_RESOURCES_TASK_NAME, task -> task.finalizedBy(extensionDescriptorTask));
                     tasks.named(JavaPlugin.COMPILE_JAVA_TASK_NAME, task -> task.dependsOn(extensionDescriptorTask));
                     tasks.withType(Test.class).configureEach(Test::useJUnitPlatform);
@@ -73,6 +77,7 @@ public class QuarkusExtensionPlugin implements Plugin<Project> {
 
         Configuration deploymentClasspath = createDeploymentClasspath(project, quarkusExt);
         Configuration deploymentMarker = createDeploymentMarker(project, quarkusExt);
+        createDeploymentDependencyElements(project, quarkusExt);
         Provider<Boolean> localDeploymentValidationEnabled = quarkusExt.getDeploymentArtifact()
                 .map(deploymentArtifact -> false)
                 .orElse(true);
@@ -105,6 +110,21 @@ public class QuarkusExtensionPlugin implements Plugin<Project> {
         deploymentMarker.getAttributes().attribute(ExtensionConstants.EXTENSION_DEPLOYMENT_ATTRIBUTE, true);
         deploymentMarker.getDependencies().addLater(deploymentProjectDependency(project, quarkusExt));
         return deploymentMarker;
+    }
+
+    private Configuration createDeploymentDependencyElements(Project project, QuarkusExtensionConfiguration quarkusExt) {
+        Configuration deploymentDependencyElements = project.getConfigurations()
+                .create(DEPLOYMENT_DEPENDENCY_ELEMENTS_CONFIGURATION_NAME);
+        deploymentDependencyElements.setCanBeConsumed(true);
+        deploymentDependencyElements.setCanBeResolved(false);
+        deploymentDependencyElements.setDescription(
+                "Provides the local deployment project dependency for this Quarkus extension runtime module.");
+        deploymentDependencyElements.getAttributes().attribute(Category.CATEGORY_ATTRIBUTE,
+                project.getObjects().named(Category.class, ExtensionConstants.EXTENSION_DEPLOYMENT_DEPENDENCY_CATEGORY));
+        deploymentDependencyElements.getAttributes()
+                .attribute(ExtensionConstants.EXTENSION_DEPLOYMENT_DEPENDENCY_ATTRIBUTE, true);
+        deploymentDependencyElements.getDependencies().addLater(deploymentProjectDependency(project, quarkusExt));
+        return deploymentDependencyElements;
     }
 
     private static Provider<Dependency> deploymentProjectDependency(Project project,

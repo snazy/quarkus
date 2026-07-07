@@ -25,6 +25,7 @@ public abstract class QuarkusPluginExtension extends AbstractQuarkusExtension {
     public static final String[] CODE_GENERATION_PROVIDER = new String[] { "grpc", "avdl", "avpr", "avsc" };
     public static final String[] CODE_GENERATION_INPUT = new String[] { "proto", "avro" };
     private final SourceSetExtension sourceSetExtension;
+    private final QuarkusDiagnostics diagnostics;
 
     public QuarkusPluginExtension(Project project) {
         super(project);
@@ -36,6 +37,7 @@ public abstract class QuarkusPluginExtension extends AbstractQuarkusExtension {
         getCodeGenerationInputs().convention(List.of(CODE_GENERATION_INPUT));
 
         this.sourceSetExtension = new SourceSetExtension();
+        this.diagnostics = project.getObjects().newInstance(QuarkusDiagnostics.class, project);
     }
 
     public Manifest getManifest() {
@@ -85,6 +87,15 @@ public abstract class QuarkusPluginExtension extends AbstractQuarkusExtension {
 
     public SourceSetExtension sourceSetExtension() {
         return sourceSetExtension;
+    }
+
+    public QuarkusDiagnostics getDiagnostics() {
+        return diagnostics;
+    }
+
+    @SuppressWarnings("unused") // publicly documented DSL
+    public void diagnostics(Action<? super QuarkusDiagnostics> action) {
+        action.execute(diagnostics);
     }
 
     public static FileCollection combinedOutputSourceDirs(Project project) {

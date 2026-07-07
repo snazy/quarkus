@@ -58,6 +58,7 @@ public class ApplicationDeploymentClasspathBuilder {
      * classpaths.
      */
     private static final String DISABLE_QUARKUS_COMPONENT_VARIANTS = "disableQuarkusComponentVariants";
+    private static final String DEFAULT_CONFIGURATION_NAME_PREFIX = "quarkus";
 
     public static Provider<Boolean> isDisableComponentVariants(ProviderFactory providers) {
         // Use gradleProperty rather than Project.getProperties().get(...): the latter is not allowed
@@ -77,8 +78,12 @@ public class ApplicationDeploymentClasspathBuilder {
     }
 
     private static String getRuntimeConfigName(LaunchMode mode, boolean base) {
+        return getRuntimeConfigName(mode, base, DEFAULT_CONFIGURATION_NAME_PREFIX);
+    }
+
+    private static String getRuntimeConfigName(LaunchMode mode, boolean base, String configurationNamePrefix) {
         final StringBuilder sb = new StringBuilder();
-        sb.append("quarkus").append(getLaunchModeAlias(mode));
+        sb.append(configurationNamePrefix).append(getLaunchModeAlias(mode));
         if (base) {
             sb.append("Base");
         }
@@ -174,19 +179,41 @@ public class ApplicationDeploymentClasspathBuilder {
     private final String platformConfigurationName;
     private final String deploymentConfigurationName;
     private final String compileOnlyConfigurationName;
+    private final String configurationNamePrefix;
     private final String platformImportsKey;
     private final Provider<PlatformImportsBuildService> platformImportsService;
+    private final boolean discoverLocalExtensionProjects;
 
     private final List<Dependency> platformDataDeps = new ArrayList<>();
     private final Map<ArtifactKey, PlatformSpec.Constraint> platformConstraints = new HashMap<>();
 
     public ApplicationDeploymentClasspathBuilder(Project project, LaunchMode mode) {
+        this(project, mode, true);
+    }
+
+    /**
+     * @param discoverLocalExtensionProjects whether deployment dependency discovery may inspect local Gradle projects to
+     *        replace extension deployment artifacts with project dependencies
+     */
+    public ApplicationDeploymentClasspathBuilder(Project project, LaunchMode mode, boolean discoverLocalExtensionProjects) {
+        this(project, mode, discoverLocalExtensionProjects, DEFAULT_CONFIGURATION_NAME_PREFIX);
+    }
+
+    /**
+     * @param discoverLocalExtensionProjects whether deployment dependency discovery may inspect local Gradle projects to
+     *        replace extension deployment artifacts with project dependencies
+     * @param configurationNamePrefix prefix for private configurations created by this builder
+     */
+    public ApplicationDeploymentClasspathBuilder(Project project, LaunchMode mode, boolean discoverLocalExtensionProjects,
+            String configurationNamePrefix) {
         this.project = project;
         this.mode = mode;
-        this.runtimeConfigurationName = getFinalRuntimeConfigName(mode);
+        this.discoverLocalExtensionProjects = discoverLocalExtensionProjects;
+        this.configurationNamePrefix = configurationNamePrefix;
+        this.runtimeConfigurationName = getRuntimeConfigName(mode, false, configurationNamePrefix);
         this.platformConfigurationName = ToolingUtils.toPlatformConfigurationName(this.runtimeConfigurationName);
         this.deploymentConfigurationName = ToolingUtils.toDeploymentConfigurationName(this.runtimeConfigurationName);
-        this.compileOnlyConfigurationName = "quarkus" + getLaunchModeAlias(mode) + "CompileOnlyConfiguration";
+        this.compileOnlyConfigurationName = configurationNamePrefix + getLaunchModeAlias(mode) + "CompileOnlyConfiguration";
         this.platformImportsKey = PlatformImportsBuildService.key(project.getPath(), this.platformConfigurationName);
         this.platformImportsService = project.getGradle().getSharedServices().registerIfAbsent(
                 PlatformImportsBuildService.NAME,
@@ -300,14 +327,15 @@ public class ApplicationDeploymentClasspathBuilder {
                 Property<PlatformSpec> platformSpecProperty = project.getObjects()
                         .property(PlatformSpec.class);
                 QuarkusComponentVariants.addVariants(project, mode,
-                        platformSpecProperty.value(project.provider(this::resolvePlatformSpec)));
-                baseConfig = QuarkusComponentVariants.getConditionalConfigurationName(mode);
+                        platformSpecProperty.value(project.provider(this::resolvePlatformSpec)),
+                        discoverLocalExtensionProjects, configurationNamePrefix);
+                baseConfig = QuarkusComponentVariants.getConditionalConfigurationName(mode, configurationNamePrefix);
             }
             project.getConfigurations().resolvable(this.runtimeConfigurationName, configuration -> {
                 configuration.setCanBeConsumed(false);
                 configuration.extendsFrom(project.getConfigurations().getByName(baseConfig));
                 if (!disableComponentVariants) {
-                    QuarkusComponentVariants.setConditionalAttributes(configuration, project, mode);
+                    QuarkusComponentVariants.setConditionalAttributes(configuration, project, mode, configurationNamePrefix);
                 }
             });
         }
@@ -358,7 +386,8 @@ public class ApplicationDeploymentClasspathBuilder {
                     })));
                 });
             } else {
-                DeploymentConfigurationResolver.registerDeploymentConfiguration(project, mode, deploymentConfigurationName);
+                DeploymentConfigurationResolver.registerDeploymentConfiguration(project, mode, deploymentConfigurationName,
+                        runtimeConfigurationName, discoverLocalExtensionProjects, configurationNamePrefix);
             }
         }
     }

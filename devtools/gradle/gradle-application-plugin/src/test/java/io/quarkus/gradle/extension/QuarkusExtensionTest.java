@@ -29,4 +29,18 @@ public class QuarkusExtensionTest {
 
         assertThat(extension.getQuarkusBuildProperties().get()).containsExactly(entry("quarkus.test.args", "value"));
     }
+
+    @Test
+    void diagnosticsDefaultToOffAndCanBeConfigured() {
+        Project project = ProjectBuilder.builder().build();
+        project.getPluginManager().apply("java");
+        QuarkusPluginExtension extension = project.getExtensions()
+                .create(EXTENSION_NAME, QuarkusPluginExtension.class, project);
+
+        assertThat(extension.getDiagnostics().getLegacyTaskUsage().get()).isEqualTo(QuarkusLegacyTaskUsageLevel.OFF);
+
+        extension.diagnostics(diagnostics -> diagnostics.getLegacyTaskUsage().set(QuarkusLegacyTaskUsageLevel.WARN));
+
+        assertThat(extension.getDiagnostics().getLegacyTaskUsage().get()).isEqualTo(QuarkusLegacyTaskUsageLevel.WARN);
+    }
 }

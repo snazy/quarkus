@@ -43,18 +43,35 @@ public class DeploymentConfigurationResolver {
      * @param configurationName configuration name
      */
     public static void registerDeploymentConfiguration(Project project, LaunchMode mode, String configurationName) {
+        registerDeploymentConfiguration(project, mode, configurationName, true);
+    }
+
+    public static void registerDeploymentConfiguration(Project project, LaunchMode mode, String configurationName,
+            boolean discoverLocalExtensionProjects) {
+        registerDeploymentConfiguration(project, mode, configurationName,
+                ApplicationDeploymentClasspathBuilder.getFinalRuntimeConfigName(mode), discoverLocalExtensionProjects,
+                "quarkus");
+    }
+
+    public static void registerDeploymentConfiguration(Project project, LaunchMode mode, String configurationName,
+            String runtimeConfigurationName, boolean discoverLocalExtensionProjects, String configurationNamePrefix) {
         project.getConfigurations().resolvable(configurationName,
-                config -> new DeploymentConfigurationResolver(project, config, mode));
+                config -> new DeploymentConfigurationResolver(project, config, mode, runtimeConfigurationName,
+                        discoverLocalExtensionProjects, configurationNamePrefix));
     }
 
     private final Project project;
+    private final boolean discoverLocalExtensionProjects;
+    private final String configurationNamePrefix;
     private byte walkingFlags;
 
-    private DeploymentConfigurationResolver(Project project, Configuration deploymentConfig, LaunchMode mode) {
+    private DeploymentConfigurationResolver(Project project, Configuration deploymentConfig, LaunchMode mode,
+            String runtimeConfigurationName, boolean discoverLocalExtensionProjects, String configurationNamePrefix) {
         this.project = project;
+        this.discoverLocalExtensionProjects = discoverLocalExtensionProjects;
+        this.configurationNamePrefix = configurationNamePrefix;
 
-        final Configuration baseRuntimeConfig = project.getConfigurations()
-                .getByName(ApplicationDeploymentClasspathBuilder.getFinalRuntimeConfigName(mode));
+        final Configuration baseRuntimeConfig = project.getConfigurations().getByName(runtimeConfigurationName);
         deploymentConfig.setCanBeConsumed(false);
         deploymentConfig.extendsFrom(baseRuntimeConfig);
         deploymentConfig.shouldResolveConsistentlyWith(baseRuntimeConfig);
@@ -75,7 +92,8 @@ public class DeploymentConfigurationResolver {
             }
             return directDeps;
         })));
-        QuarkusComponentVariants.setDeploymentAndConditionalAttributes(deploymentConfig, project, mode);
+        QuarkusComponentVariants.setDeploymentAndConditionalAttributes(deploymentConfig, project, mode,
+                configurationNamePrefix);
     }
 
     private Collection<Dependency> collectDirectDeploymentDeps(ResolvedConfiguration baseConfig) {
@@ -107,7 +125,9 @@ public class DeploymentConfigurationResolver {
                     final ProcessedDependency pd = new ProcessedDependency(parent, dep,
                             artifact.getId().getComponentIdentifier() instanceof ProjectComponentIdentifier);
                     if (isWalkingFlagsOn(COLLECT_TOP_EXTENSIONS)) {
-                        pd.ext = DependencyUtils.getExtensionInfoOrNull(project, artifact);
+                        pd.ext = discoverLocalExtensionProjects
+                                ? DependencyUtils.getExtensionInfoOrNull(project, artifact)
+                                : DependencyUtils.getArtifactExtensionInfoOrNull(project, artifact);
                         if (pd.ext != null) {
                             pd.setFlags(DependencyFlags.TOP_LEVEL_RUNTIME_EXTENSION_ARTIFACT);
                         }

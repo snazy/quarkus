@@ -56,6 +56,27 @@ public class GradlePomResolver implements PomResolver {
         resolvedPomFiles.forEach((gav, file) -> pomCache.put(gav, Optional.of(file)));
     }
 
+    public GradlePomResolver(Map<GAV, File> resolvedPomFiles, DependencyHandler dependencies,
+            Collection<File> repositoryRoots) {
+        this.dependencies = dependencies;
+        this.resolvedPomFiles = Map.copyOf(resolvedPomFiles);
+        this.repositoryRoots = new ArrayList<>(repositoryRoots);
+        resolvedPomFiles.forEach((gav, file) -> pomCache.put(gav, Optional.of(file)));
+    }
+
+    public GradlePomResolver(Map<GAV, File> resolvedPomFiles, Collection<GAV> missingPoms,
+            Collection<File> repositoryRoots) {
+        dependencies = null;
+        this.resolvedPomFiles = Map.copyOf(resolvedPomFiles);
+        this.repositoryRoots = new ArrayList<>(repositoryRoots);
+        resolvedPomFiles.forEach((gav, file) -> pomCache.put(gav, Optional.of(file)));
+        missingPoms.forEach(gav -> pomCache.putIfAbsent(gav, Optional.empty()));
+    }
+
+    public Map<GAV, Optional<File>> getPomResults() {
+        return Map.copyOf(pomCache);
+    }
+
     public void prefetchPoms(Stream<ModuleComponentIdentifier> moduleIds) {
         Set<ModuleComponentIdentifier> unresolvedModuleIds = new HashSet<>();
         moduleIds.filter(moduleId -> !pomCache.containsKey(toGav(moduleId)))

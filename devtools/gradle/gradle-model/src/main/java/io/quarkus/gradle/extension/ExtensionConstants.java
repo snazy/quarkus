@@ -8,6 +8,11 @@ public interface ExtensionConstants {
     String EXTENSION_DEPLOYMENT_MARKER_ELEMENTS_CONFIGURATION_NAME = "quarkusExtensionDeploymentMarkerElements";
     String EXTENSION_DEPLOYMENT_MARKER_TASK_NAME = "quarkusExtensionDeploymentMarker";
     String EXTENSION_DEPLOYMENT_MARKER_CATEGORY = "quarkus-extension-deployment-marker";
+    String EXTENSION_DEPLOYMENT_DEPENDENCY_ELEMENTS_CONFIGURATION_NAME = "quarkusExtensionDeploymentDependencyElements";
+    String EXTENSION_DEPLOYMENT_DEPENDENCY_CATEGORY = "quarkus-extension-deployment-dependency";
+    Attribute<Boolean> EXTENSION_RUNTIME_ATTRIBUTE = Attribute.of("io.quarkus.extension.runtime", Boolean.class);
     Attribute<Boolean> EXTENSION_DEPLOYMENT_ATTRIBUTE = Attribute.of(EXTENSION_DEPLOYMENT_PLUGIN_ID, Boolean.class);
+    Attribute<Boolean> EXTENSION_DEPLOYMENT_DEPENDENCY_ATTRIBUTE = Attribute.of(
+            EXTENSION_DEPLOYMENT_PLUGIN_ID + ".dependency", Boolean.class);
     String QUARKUS_ANNOTATION_PROCESSOR = "io.quarkus:quarkus-extension-processor";
 }

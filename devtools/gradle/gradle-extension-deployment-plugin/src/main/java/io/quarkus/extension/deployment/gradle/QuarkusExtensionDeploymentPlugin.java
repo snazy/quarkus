@@ -11,13 +11,14 @@ import org.gradle.api.tasks.testing.Test;
 
 import io.quarkus.gradle.GradleVersionSupport;
 import io.quarkus.gradle.dependency.ApplicationDeploymentClasspathBuilder;
+import io.quarkus.gradle.dependency.LocalComponentOutputViews;
 import io.quarkus.gradle.extension.AnnotationProcessorDependencyConfigurator;
 import io.quarkus.gradle.extension.ExtensionConstants;
 import io.quarkus.gradle.tooling.DefaultProjectDescriptor;
 import io.quarkus.gradle.tooling.ProjectDescriptorBuilder;
 import io.quarkus.gradle.tooling.dependency.DependencyDataCollector;
-import io.quarkus.gradle.tooling.tasks.ApplicationModelTaskConfigurator;
 import io.quarkus.gradle.tooling.tasks.GenerateApplicationModelTask;
+import io.quarkus.gradle.tooling.tasks.IsolatedApplicationModelTaskConfigurator;
 import io.quarkus.runtime.LaunchMode;
 
 public class QuarkusExtensionDeploymentPlugin implements Plugin<Project> {
@@ -26,6 +27,7 @@ public class QuarkusExtensionDeploymentPlugin implements Plugin<Project> {
     public static final String MARKER_ELEMENTS_CONFIGURATION_NAME = ExtensionConstants.EXTENSION_DEPLOYMENT_MARKER_ELEMENTS_CONFIGURATION_NAME;
     public static final String MARKER_TASK_NAME = ExtensionConstants.EXTENSION_DEPLOYMENT_MARKER_TASK_NAME;
     public static final String MARKER_CATEGORY = ExtensionConstants.EXTENSION_DEPLOYMENT_MARKER_CATEGORY;
+    private static final String ISOLATED_TEST_MODEL_CONFIGURATION_PREFIX = "quarkusExtensionDeploymentIsolated";
 
     @Override
     public void apply(Project project) {
@@ -55,15 +57,18 @@ public class QuarkusExtensionDeploymentPlugin implements Plugin<Project> {
     }
 
     private void registerTestApplicationModel(Project project) {
-        Provider<DefaultProjectDescriptor> projectDescriptor = ProjectDescriptorBuilder.buildForApp(project);
+        Provider<DefaultProjectDescriptor> projectDescriptor = ProjectDescriptorBuilder.buildForCurrentProject(project);
         ApplicationDeploymentClasspathBuilder testClasspath = new ApplicationDeploymentClasspathBuilder(project,
-                LaunchMode.TEST);
+                LaunchMode.TEST, false, ISOLATED_TEST_MODEL_CONFIGURATION_PREFIX);
+        LocalComponentOutputViews localComponentOutputs = LocalComponentOutputViews.of(project.getObjects(),
+                testClasspath.getRuntimeConfigurationWithoutResolvingDeployment());
         DependencyDataCollector dependencyDataCollector = new DependencyDataCollector(project.getDependencies(),
                 project.getProviders());
 
-        TaskProvider<GenerateApplicationModelTask> generateTestAppModelTask = ApplicationModelTaskConfigurator
-                .registerGenerateApplicationModelTask(project, projectDescriptor, testClasspath, dependencyDataCollector,
-                        LaunchMode.TEST);
+        TaskProvider<GenerateApplicationModelTask> generateTestAppModelTask = IsolatedApplicationModelTaskConfigurator
+                .registerGenerateApplicationModelTask(project, projectDescriptor, testClasspath,
+                        dependencyDataCollector,
+                        LaunchMode.TEST, localComponentOutputs);
 
         project.getTasks().withType(Test.class).configureEach(test -> {
             test.useJUnitPlatform();

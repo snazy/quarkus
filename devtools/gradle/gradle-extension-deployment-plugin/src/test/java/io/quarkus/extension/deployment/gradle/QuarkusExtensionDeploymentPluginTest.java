@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
@@ -13,7 +15,12 @@ import org.gradle.testkit.runner.TaskOutcome;
 import org.junit.jupiter.api.Test;
 
 import io.quarkus.bootstrap.BootstrapConstants;
+import io.quarkus.bootstrap.app.ApplicationModelSerializer;
+import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.gradle.testing.BaseGradleTest;
+import io.quarkus.maven.dependency.ArtifactKey;
+import io.quarkus.maven.dependency.DependencyFlags;
+import io.quarkus.maven.dependency.ResolvedDependency;
 
 public class QuarkusExtensionDeploymentPluginTest extends BaseGradleTest {
     @Test
@@ -111,6 +118,73 @@ public class QuarkusExtensionDeploymentPluginTest extends BaseGradleTest {
 
         assertThat(result.task(":deployment:quarkusGenerateTestAppModel").getOutcome()).isEqualTo(TaskOutcome.SUCCESS);
         assertThat(result.task(":deployment:test").getOutcome()).isEqualTo(TaskOutcome.SUCCESS);
+    }
+
+    @Test
+    public void generatedApplicationModelUsesLocalOutputsWithIsolatedProjects() throws Exception {
+        writeFile("settings.gradle",
+                "rootProject.name = 'test'\n" +
+                        "include 'runtime', 'deployment'\n");
+        var runtimeProjectDir = testProjectDir.resolve("runtime");
+        var deploymentProjectDir = testProjectDir.resolve("deployment");
+        writeFile(runtimeProjectDir.resolve("build.gradle"),
+                "plugins {\n" +
+                        "    id 'java-library'\n" +
+                        "    id 'java-test-fixtures'\n" +
+                        "}\n" +
+                        "group = 'org.acme'\n" +
+                        "version = '1.0.0'\n" +
+                        "repositories {\n" +
+                        "    mavenCentral()\n" +
+                        "    mavenLocal()\n" +
+                        "}\n" +
+                        "dependencies {\n" +
+                        "    implementation enforcedPlatform('io.quarkus:quarkus-bom:" + getCurrentQuarkusVersion() + "')\n" +
+                        "    implementation 'io.quarkus:quarkus-arc'\n" +
+                        "}\n");
+        writeFile(runtimeProjectDir.resolve("src/main/java/runtime/MainRuntime.java"),
+                "package runtime; public class MainRuntime {}\n");
+        writeFile(runtimeProjectDir.resolve("src/testFixtures/java/runtime/FixtureRuntime.java"),
+                "package runtime; public class FixtureRuntime {}\n");
+
+        writeFile(deploymentProjectDir.resolve("build.gradle"),
+                "plugins {\n" +
+                        "    id '" + QuarkusExtensionDeploymentPlugin.PLUGIN_ID + "'\n" +
+                        "}\n" +
+                        "group = 'org.acme'\n" +
+                        "version = '1.0.0'\n" +
+                        "repositories {\n" +
+                        "    mavenCentral()\n" +
+                        "    mavenLocal()\n" +
+                        "}\n" +
+                        "dependencies {\n" +
+                        "    implementation enforcedPlatform('io.quarkus:quarkus-bom:" + getCurrentQuarkusVersion() + "')\n" +
+                        "    implementation 'io.quarkus:quarkus-arc-deployment'\n" +
+                        "    implementation project(':runtime')\n" +
+                        "    testImplementation testFixtures(project(':runtime'))\n" +
+                        "}\n");
+
+        var result = buildResult(":deployment:quarkusGenerateTestAppModel",
+                "-Dorg.gradle.unsafe.isolated-projects=true");
+
+        assertThat(result.task(":deployment:quarkusGenerateTestAppModel").getOutcome()).isEqualTo(TaskOutcome.SUCCESS);
+        Path modelPath = deploymentProjectDir.resolve("build/quarkus/application-model/quarkus-app-test-model.dat");
+        assertThat(modelPath).exists();
+        ApplicationModel model = ApplicationModelSerializer.deserialize(modelPath);
+        Map<ArtifactKey, ResolvedDependency> orgAcmeDependencies = new HashMap<>();
+        for (ResolvedDependency dependency : model.getDependencies()) {
+            if (dependency.getGroupId().equals("org.acme")) {
+                orgAcmeDependencies.put(dependency.getKey(), dependency);
+            }
+        }
+
+        ResolvedDependency runtime = orgAcmeDependencies.get(ArtifactKey.fromString("org.acme:runtime::jar"));
+        ResolvedDependency testFixtures = orgAcmeDependencies.get(ArtifactKey.fromString("org.acme:runtime:test-fixtures:jar"));
+        assertWorkspaceReloadable(runtime);
+        assertWorkspaceReloadable(testFixtures);
+        assertResolvedPathsContain(runtime, "runtime/build/classes/java/main");
+        assertResolvedPathsContain(testFixtures, "runtime/build/classes/java/testFixtures");
+        assertResolvedPathsDoNotContain(testFixtures, "runtime/build/classes/java/main");
     }
 
     @Test
@@ -239,5 +313,27 @@ public class QuarkusExtensionDeploymentPluginTest extends BaseGradleTest {
             props.load(is);
         }
         return props.getProperty("version");
+    }
+
+    private static void assertWorkspaceReloadable(ResolvedDependency dependency) {
+        assertThat(dependency).isNotNull();
+        assertThat(dependency.getFlags() & DependencyFlags.WORKSPACE_MODULE).isNotZero();
+        assertThat(dependency.getFlags() & DependencyFlags.RELOADABLE).isNotZero();
+    }
+
+    private static void assertResolvedPathsContain(ResolvedDependency dependency, String expectedPath) {
+        assertThat(dependency.getResolvedPaths().stream()
+                .map(QuarkusExtensionDeploymentPluginTest::normalizedPath)
+                .toList()).anyMatch(path -> path.endsWith(expectedPath));
+    }
+
+    private static void assertResolvedPathsDoNotContain(ResolvedDependency dependency, String unexpectedPath) {
+        assertThat(dependency.getResolvedPaths().stream()
+                .map(QuarkusExtensionDeploymentPluginTest::normalizedPath)
+                .toList()).noneMatch(path -> path.endsWith(unexpectedPath));
+    }
+
+    private static String normalizedPath(Path path) {
+        return path.toString().replace('\\', '/');
     }
 }
