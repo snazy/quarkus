@@ -1,0 +1,15 @@
+allprojects { p ->
+    tasks.register('queryLocalPom') {
+        doLast {
+            def result = p.dependencies.createArtifactResolutionQuery()
+                    .forModule('org.acme.deps', 'lib-a', '1.0.0')
+                    .withArtifacts(org.gradle.maven.MavenModule, org.gradle.maven.MavenPomArtifact)
+                    .execute()
+            println p.path + ' resolved=' + result.resolvedComponents.size()
+            result.resolvedComponents.each { component ->
+                println component.id
+                println component.getArtifacts(org.gradle.maven.MavenPomArtifact).collect { it.file }
+            }
+        }
+    }
+}

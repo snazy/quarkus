@@ -1,0 +1,24 @@
+allprojects { p ->
+    tasks.register('queryPomArtifactView') {
+        doLast {
+            def configuration = p.configurations.findByName('quarkusDeployment')
+                    ?: p.configurations.findByName('runtimeClasspath')
+            def artifacts = configuration.incoming.artifactView { view ->
+                view.lenient(true)
+                view.componentFilter { component ->
+                    component instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                }
+                view.withVariantReselection()
+                view.attributes { attributes ->
+                    attributes.attribute(org.gradle.api.artifacts.type.ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, 'pom')
+                }
+            }.artifacts
+            println p.path + ' pom artifacts=' + artifacts.artifacts.size()
+            artifacts.artifacts.findAll {
+                it.id.componentIdentifier.displayName.contains('org.acme')
+            }.each {
+                println it.id.componentIdentifier.displayName + ' -> ' + it.file
+            }
+        }
+    }
+}
